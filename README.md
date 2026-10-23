@@ -83,4 +83,16 @@ El sistema comienza reservando espacio para cuatro elementos en cada arreglo pri
 
 Al finalizar, liberarSistema() libera los arreglos dinámicos. También contempla la liberación de los arreglos de detalles pertenecientes a las órdenes de servicio, para cuando esa funcionalidad se implemente.
 
+Preguntas de Análisis   
 
+1. agregarVehiculo retorna un puntero a un elemento de s->vehiculos. Si guardan ese puntero en una variable, registran varios vehículos más y luego lo usan, ¿qué puede ocurrir y por qué?
+
+Si guardo ese puntero y luego sigo agregando vehículos, en algún momento el arreglo alcanzará su capacidad máxima y se va a llamar a la función de redimensionamiento, esa función crea un arreglo más grande, copia los datos y le hace un delete[] al arreglo viejo, el puntero que yo había guardado se convierte en un puntero colgante porque ahora apunta a un espacio de memoria que ya fue liberado. Si intento usarlo, el programa va a fallar.
+
+2. ¿Por qué DetalleOrden guarda precioUnitario en lugar de consultar el precio del repuesto cada vez que se calcula el total?
+
+Porque necesitamos guardar el precio histórico. Si hoy le pongo a un cliente unas pastillas de freno a $25 y cierro la orden, el total queda fijo, si la semana que viene el proveedor sube las pastillas a $35 y yo actualizo el precio en el inventario, las órdenes viejas no pueden recalcularse con el precio nuevo, guardar el precioUnitario en la línea de detalle congela el precio al momento exacto en que se agregó a la orden.
+
+3. Cuando se redimensiona el arreglo de órdenes, ¿qué ocurre con el arreglo de detalles de cada orden? ¿Se copia, se comparte o se pierde? Justifiquen con su implementación.
+
+Se comparte temporalmente al redimensionar el arreglo de s->ordenes, hacemos una copia miembro a miembro (nuevoArreglo[i] = s->ordenes[i]), como la estructura OrdenServicio contiene un puntero detalles, lo que se está copiando hacia el nuevo arreglo es la dirección de memoria de los detalles, no los detalles en sí. Por lo tanto, tanto la orden vieja como la nueva apuntan al mismo arreglo de detalles, esto es seguro siempre y cuando al liberar el arreglo viejo de órdenes (delete[] s->ordenes) no se hace delete de los detalles internos, porque si no, destruiríamos la información de las órdenes del nuevo arreglo.
