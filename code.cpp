@@ -63,7 +63,7 @@ struct OrdenServicio {
     int kilometrajeIngreso;
     float manoObra;
     
-    DetalleOrden* detalles; // Arreglo dinámico propio de la orden
+    DetalleOrden* detalles; 
     int numDetalles;
     int capacidadDetalles;
 };
@@ -97,7 +97,7 @@ struct SistemaTaller {
 // 2. CAPA DE LÓGICA (PROHIBIDO USAR CIN / COUT AQUÍ)
 // ========================================================
 
-// Inicializa el sistema reservando memoria para 4 elementos en cada arreglo
+
 void inicializarSistema(SistemaTaller* s) {
     strcpy(s->taller.nombre, "Autoservicio El Lago");
     
@@ -122,20 +122,18 @@ void inicializarSistema(SistemaTaller* s) {
     s->siguienteIdOrden = 1;
 }
 
-// Libera toda la memoria dinámica antes de cerrar el programa
 void liberarSistema(SistemaTaller* s) {
     delete[] s->vehiculos;
     delete[] s->mecanicos;
     delete[] s->repuestos;
     
-    // Las órdenes tienen memoria anidada que debe liberarse primero
     for (int i = 0; i < s->numOrdenes; i++) {
         delete[] s->ordenes[i].detalles;
     }
     delete[] s->ordenes;
 }
 
-// Redimensiona el arreglo de vehículos al doble de su capacidad actual
+
 void redimensionarVehiculos(SistemaTaller* s) {
     s->capacidadVehiculos *= 2;
     Vehiculo* nuevoArreglo = new Vehiculo[s->capacidadVehiculos];
@@ -148,7 +146,7 @@ void redimensionarVehiculos(SistemaTaller* s) {
     s->vehiculos = nuevoArreglo;
 }
 
-// Busca un vehículo por su ID. Retorna puntero si existe, nullptr si no.
+
 Vehiculo* buscarVehiculoPorID(SistemaTaller* s, int id) {
     for (int i = 0; i < s->numVehiculos; i++) {
         if (s->vehiculos[i].id == id) {
@@ -158,13 +156,11 @@ Vehiculo* buscarVehiculoPorID(SistemaTaller* s, int id) {
     return nullptr;
 }
 
-// Agrega un vehículo. Valida lógica de negocio básica y redimensiona si es necesario.
 Vehiculo* agregarVehiculo(SistemaTaller* s, Vehiculo datos) {
     // Validación: Año entre 1950 y 2027
     if (datos.anio < 1950 || datos.anio > 2027) return nullptr;
     if (datos.kilometraje <= 0) return nullptr;
     
-    // Duplicar capacidad si el arreglo está lleno
     if (s->numVehiculos == s->capacidadVehiculos) {
         redimensionarVehiculos(s);
     }
@@ -206,7 +202,7 @@ void menuRegistrarVehiculo(SistemaTaller* s) {
     cin >> temp.anio;
     cout << "Kilometraje: ";
     cin >> temp.kilometraje;
-    cin.ignore(); // Limpiar el buffer antes de leer cadenas con espacios
+    cin.ignore(); 
     
     cout << "Nombre del propietario: ";
     cin.getline(temp.nombrePropietario, 100);
@@ -252,7 +248,7 @@ void menuPrincipal(SistemaTaller* s) {
                 cout << "Saliendo del sistema...\n";
                 break;
             default:
-                cout << "Opcion invalida.\n";
+                cout << "Opcion invalida. Intente de nuevo.\n";
         }
     } while (opcion != 0);
 }
