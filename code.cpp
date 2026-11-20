@@ -96,6 +96,24 @@ struct OrdenServicio {
     time_t fechaUltimaModificacion;
 };
 
+struct ConsumoRepuestoReporte {
+    int idRepuesto;
+    char codigo[20];
+    char nombre[100];
+    long long unidadesConsumidas;
+};
+
+struct FacturacionMecanicoReporte {
+    int idMecanico;
+    char nombre[100];
+    bool dadoDeBaja;
+    int ordenesCerradas;
+    double totalManoObra;
+    double totalRepuestos;
+};
+
+const int TOP_REPUESTOS_REPORTE = 10;
+
 enum EstadoBusquedaVehiculo {
     VEHICULO_ENCONTRADO = 0,
     VEHICULO_NO_EXISTE = 1,
@@ -1730,6 +1748,241 @@ int consultarHistorialVehiculoLogica(
     return encontrados;
 }
 
+void formatearTimestampCarpeta(time_t t, char* buffer, size_t tam) {
+    struct tm* tmInfo = localtime(&t);
+    if (tmInfo != nullptr) {
+        strftime(buffer, tam, "backup_%Y-%m-%d_%H-%M", tmInfo);
+    } else {
+        strncpy(buffer, "backup_sin_fecha", tam - 1);
+        buffer[tam - 1] = '\0';
+    }
+}
+
+bool copiarArchivoBinarioByteAByte(const char* origen, const char* destino) {
+    ifstream in(origen, ios::binary);
+    if (!in.is_open()) return false;
+
+    ofstream out(destino, ios::binary | ios::trunc);
+    if (!out.is_open()) {
+        in.close();
+        return false;
+    }
+
+    char buffer[4096];
+    while (in.read(buffer, sizeof(buffer))) {
+        out.write(buffer, in.gcount());
+        if (!out.good()) {
+            in.close();
+            out.close();
+            return false;
+        }
+    }
+    if (in.gcount() > 0) {
+        out.write(buffer, in.gcount());
+    }
+
+    bool ok = out.good();
+    in.close();
+    out.close();
+    return ok;
+}
+
+bool crearBackupLogica(const char* carpetaDatos, char* nombreCarpetaGenerada, size_t tamNombre) {
+    time_t ahora = time(nullptr);
+    formatearTimestampCarpeta(ahora, nombreCarpetaGenerada, tamNombre);
+
+    CREAR_CARPETA(nombreCarpetaGenerada);
+
+    const char* archivos[] = {
+        "taller.bin",
+        "vehiculos.bin",
+        "mecanicos.bin",
+        "repuestos.bin",
+        "ordenes.bin"
+    };
+
+    bool copioAlMenosUno = false;
+    for (const char* nombreArchivo : archivos) {
+        string rutaOrigen = string(carpetaDatos) + "/" + nombreArchivo;
+        ifstream prueba(rutaOrigen, ios::binary);
+        if (prueba.good()) {
+            prueba.close();
+            string rutaDestino = string(nombreCarpetaGenerada) + "/" + nombreArchivo;
+            if (!copiarArchivoBinarioByteAByte(rutaOrigen.c_str(), rutaDestino.c_str())) {
+                return false;
+            }
+            copioAlMenosUno = true;
+        } else {
+            prueba.close();
+        }
+    }
+
+    return copioAlMenosUno;
+}
+
+int calcularTopRepuestosConsumidosLogica(
+    const char* rutaOrdenes,
+    const char* rutaRepuestos,
+    ConsumoRepuestoReporte topSalida[],
+    int maxTop
+) {
+    ArchivoHeader headerRep{};
+    if (!leerHeaderRepuestos(rutaRepuestos, headerRep)) return -1;
+
+    ifstream archOrd(rutaOrdenes, ios::binary);
+    if (!archOrd.is_open()) return -1;
+
+    ArchivoHeader headerOrd{};
+    archOrd.read(reinterpret_cast<char*>(&headerOrd), sizeof(ArchivoHeader));
+    if (archOrd.gcount() != static_cast<streamsize>(sizeof(ArchivoHeader))) {
+        archOrd.close();
+        return -1;
+    }
+
+    int countTop = 0;
+    for (int i = 0; i < maxTop; i++) {
+        topSalida[i].idRepuesto = 0;
+        topSalida[i].codigo[0] = '\0';
+        topSalida[i].nombre[0] = '\0';
+        topSalida[i].unidadesConsumidas = 0;
+    }
+
+    OrdenServicio orden{};
+    for (int i = 0; i < headerOrd.cantidadRegistros; i++) {
+        archOrd.read(reinterpret_cast<char*>(&orden), sizeof(OrdenServicio));
+        if (archOrd.gcount() != static_cast<streamsize>(sizeof(OrdenServicio))) break;
+        if (orden.eliminado || strcmp(orden.estado, "CERRADA") != 0) continue;
+
+        int limite = orden.numDetalles;
+        if (limite < 0) limite = 0;
+        if (limite > MAX_DETALLES_ORDEN) limite = MAX_DETALLES_ORDEN;
+
+        for (int j = 0; j < limite; j++) {
+            int idRep = orden.detalles[j].idRepuesto;
+            int cant = orden.detalles[j].cantidad;
+            if (idRep <= 0 || cant <= 0) continue;
+
+            int idx = -1;
+            for (int k = 0; k < countTop; k++) {
+                if (topSalida[k].idRepuesto == idRep) {
+                    idx = k;
+                    break;
+                }
+            }
+
+            if (idx != -1) {
+                topSalida[idx].unidadesConsumidas += cant;
+            } else if (countTop < maxTop) {
+                Repuesto rep{};
+                ifstream archRep(rutaRepuestos, ios::binary);
+                if (archRep.is_open() && idRep < headerRep.proximoID) {
+                    archRep.seekg(calcularOffsetRepuesto(idRep), ios::beg);
+                    archRep.read(reinterpret_cast<char*>(&rep), sizeof(Repuesto));
+                    if (archRep.gcount() == static_cast<streamsize>(sizeof(Repuesto)) && rep.id == idRep) {
+                        topSalida[countTop].idRepuesto = rep.id;
+                        strncpy(topSalida[countTop].codigo, rep.codigo, sizeof(topSalida[countTop].codigo) - 1);
+                        topSalida[countTop].codigo[sizeof(topSalida[countTop].codigo) - 1] = '\0';
+                        strncpy(topSalida[countTop].nombre, rep.nombre, sizeof(topSalida[countTop].nombre) - 1);
+                        topSalida[countTop].nombre[sizeof(topSalida[countTop].nombre) - 1] = '\0';
+                        topSalida[countTop].unidadesConsumidas = cant;
+                        countTop++;
+                    }
+                    archRep.close();
+                }
+            }
+        }
+    }
+    archOrd.close();
+
+    for (int i = 0; i < countTop; i++) {
+        int mayor = i;
+        for (int j = i + 1; j < countTop; j++) {
+            if (topSalida[j].unidadesConsumidas > topSalida[mayor].unidadesConsumidas) {
+                mayor = j;
+            }
+        }
+        if (mayor != i) {
+            ConsumoRepuestoReporte aux = topSalida[i];
+            topSalida[i] = topSalida[mayor];
+            topSalida[mayor] = aux;
+        }
+    }
+
+    return countTop;
+}
+
+int calcularFacturacionPorMecanicoLogica(
+    const char* rutaMecanicos,
+    const char* rutaOrdenes,
+    FacturacionMecanicoReporte salida[],
+    int maxResultados,
+    bool& hayMas
+) {
+    hayMas = false;
+    ArchivoHeader headerMec{};
+    if (!leerHeaderMecanicos(rutaMecanicos, headerMec)) return -1;
+
+    ifstream archMec(rutaMecanicos, ios::binary);
+    if (!archMec.is_open()) return -1;
+
+    ifstream archOrd(rutaOrdenes, ios::binary);
+    ArchivoHeader headerOrd{};
+    bool tieneOrdenes = false;
+    if (archOrd.is_open()) {
+        archOrd.read(reinterpret_cast<char*>(&headerOrd), sizeof(ArchivoHeader));
+        tieneOrdenes = (archOrd.gcount() == static_cast<streamsize>(sizeof(ArchivoHeader)));
+    }
+
+    archMec.seekg(sizeof(ArchivoHeader), ios::beg);
+    Mecanico mec{};
+    int totalMecanicos = 0;
+
+    for (int i = 0; i < headerMec.cantidadRegistros; i++) {
+        archMec.read(reinterpret_cast<char*>(&mec), sizeof(Mecanico));
+        if (archMec.gcount() != static_cast<streamsize>(sizeof(Mecanico))) break;
+
+        if (totalMecanicos < maxResultados) {
+            FacturacionMecanicoReporte item{};
+            item.idMecanico = mec.id;
+            strncpy(item.nombre, mec.nombre, sizeof(item.nombre) - 1);
+            item.nombre[sizeof(item.nombre) - 1] = '\0';
+            item.dadoDeBaja = mec.eliminado;
+            item.ordenesCerradas = 0;
+            item.totalManoObra = 0.0;
+            item.totalRepuestos = 0.0;
+
+            if (tieneOrdenes) {
+                archOrd.clear();
+                archOrd.seekg(sizeof(ArchivoHeader), ios::beg);
+                OrdenServicio orden{};
+                for (int j = 0; j < headerOrd.cantidadRegistros; j++) {
+                    archOrd.read(reinterpret_cast<char*>(&orden), sizeof(OrdenServicio));
+                    if (archOrd.gcount() != static_cast<streamsize>(sizeof(OrdenServicio))) break;
+                    if (!orden.eliminado && orden.idMecanico == mec.id && strcmp(orden.estado, "CERRADA") == 0) {
+                        item.ordenesCerradas++;
+                        item.totalManoObra += static_cast<double>(orden.manoObra);
+                        int lim = orden.numDetalles;
+                        if (lim < 0) lim = 0;
+                        if (lim > MAX_DETALLES_ORDEN) lim = MAX_DETALLES_ORDEN;
+                        for (int k = 0; k < lim; k++) {
+                            item.totalRepuestos += static_cast<double>(orden.detalles[k].cantidad) *
+                                                   static_cast<double>(orden.detalles[k].precioUnitario);
+                        }
+                    }
+                }
+            }
+
+            salida[totalMecanicos++] = item;
+        } else {
+            hayMas = true;
+        }
+    }
+
+    if (archOrd.is_open()) archOrd.close();
+    archMec.close();
+    return totalMecanicos;
+}
+
 // 4. Capa de presentacion unica con cin / cout
 
 
@@ -2385,6 +2638,283 @@ void menuGestionOrdenes() {
             case 6: menuBuscarOrdenPorID(); break;
             case 7: menuListarOrdenesPorEstado(); break;
             case 8: menuConsultarHistorialVehiculo(); break;
+            case 0: break;
+            default: cout << "Opcion invalida.\n";
+        }
+    } while (opc != 0);
+}
+
+void menuReporteHistorialVehiculo() {
+    char placa[10];
+    cout << "\n--- REPORTE 1: HISTORIAL DE VEHICULO POR PLACA ---\n";
+    cout << "Ingrese la placa: ";
+    cin >> placa;
+
+    Vehiculo v{};
+    EstadoBusquedaVehiculo estVeh = obtenerVehiculoPorPlacaLogica(RUTA_VEHICULOS, placa, v);
+    if (estVeh != VEHICULO_ENCONTRADO && estVeh != VEHICULO_ELIMINADO) {
+        cout << "No se encontro un vehiculo con la placa '" << placa << "'.\n";
+        return;
+    }
+
+    mostrarVehiculo(v);
+    if (estVeh == VEHICULO_ELIMINADO) {
+        cout << "Nota: El vehiculo figura como ELIMINADO logicamente.\n";
+    }
+
+    OrdenServicio ordenes[MAX_RESULTADOS_BUSQUEDA];
+    bool hayMas = false;
+    int cant = consultarHistorialVehiculoLogica(RUTA_ORDENES, v.id, ordenes, MAX_RESULTADOS_BUSQUEDA, hayMas);
+    if (cant < 0) {
+        cout << "ERROR: Fallo al leer " << RUTA_ORDENES << ".\n";
+        return;
+    }
+    if (cant == 0) {
+        cout << "El vehiculo no tiene ordenes registradas.\n";
+        return;
+    }
+
+    double totalFacturadoCerradas = 0.0;
+    for (int i = 0; i < cant; i++) {
+        mostrarOrden(ordenes[i]);
+        if (strcmp(ordenes[i].estado, "CERRADA") == 0) {
+            totalFacturadoCerradas += calcularTotalOrdenLogica(ordenes[i]);
+        }
+    }
+    cout << "TOTAL FACTURADO EN ORDENES CERRADAS: " << totalFacturadoCerradas << "\n";
+    if (hayMas) {
+        cout << "AVISO: Existen mas ordenes que el limite de " << MAX_RESULTADOS_BUSQUEDA << ".\n";
+    }
+}
+
+void menuReporteTopRepuestos() {
+    cout << "\n--- REPORTE 2: TOP 10 REPUESTOS MAS UTILIZADOS (ORDENES CERRADAS) ---\n";
+    ConsumoRepuestoReporte top[TOP_REPUESTOS_REPORTE];
+    int cant = calcularTopRepuestosConsumidosLogica(RUTA_ORDENES, RUTA_REPUESTOS, top, TOP_REPUESTOS_REPORTE);
+    if (cant < 0) {
+        cout << "ERROR: No se pudieron leer los archivos de ordenes o repuestos.\n";
+        return;
+    }
+    if (cant == 0) {
+        cout << "No hay repuestos consumidos en ordenes CERRADAS.\n";
+        return;
+    }
+
+    cout << "Pos\tID\tCodigo\t\tNombre\t\t\tUnidades\n";
+    cout << "-------------------------------------------------------------------------\n";
+    for (int i = 0; i < cant; i++) {
+        cout << (i + 1) << "\t" << top[i].idRepuesto << "\t" << top[i].codigo << "\t\t"
+             << top[i].nombre << "\t\t" << top[i].unidadesConsumidas << "\n";
+    }
+}
+
+void menuReporteFacturacionMecanicos() {
+    cout << "\n--- REPORTE 3: FACTURACION POR MECANICO (ORDENES CERRADAS) ---\n";
+    FacturacionMecanicoReporte items[MAX_RESULTADOS_BUSQUEDA];
+    bool hayMas = false;
+    int cant = calcularFacturacionPorMecanicoLogica(RUTA_MECANICOS, RUTA_ORDENES, items, MAX_RESULTADOS_BUSQUEDA, hayMas);
+    if (cant < 0) {
+        cout << "ERROR: No se pudieron leer los archivos.\n";
+        return;
+    }
+    if (cant == 0) {
+        cout << "No hay mecanicos registrados.\n";
+        return;
+    }
+
+    cout << "ID\tNombre\t\t\tEstado\tOrd. Cerradas\tMano Obra\tRepuestos\tTotal\n";
+    cout << "------------------------------------------------------------------------------------------------\n";
+    for (int i = 0; i < cant; i++) {
+        double totalMec = items[i].totalManoObra + items[i].totalRepuestos;
+        cout << items[i].idMecanico << "\t" << items[i].nombre << "\t\t"
+             << (items[i].dadoDeBaja ? "[BAJA]" : "ACTIVO") << "\t"
+             << items[i].ordenesCerradas << "\t\t"
+             << items[i].totalManoObra << "\t\t"
+             << items[i].totalRepuestos << "\t\t"
+             << totalMec << "\n";
+    }
+    if (hayMas) {
+        cout << "AVISO: Existen mas mecanicos que el limite de " << MAX_RESULTADOS_BUSQUEDA << ".\n";
+    }
+}
+
+void menuReportes() {
+    int opc = 0;
+    do {
+        cout << "\n--- REPORTES ---\n";
+        cout << "1. Historial de Vehiculo por Placa\n";
+        cout << "2. Top 10 Repuestos Mas Utilizados\n";
+        cout << "3. Facturacion por Mecanico\n";
+        cout << "0. Volver al menu principal\n";
+        cout << "Seleccione una opcion: ";
+        if (!(cin >> opc)) {
+            cin.clear();
+            cin.ignore(10000, '\n');
+            continue;
+        }
+
+        switch (opc) {
+            case 1: menuReporteHistorialVehiculo(); break;
+            case 2: menuReporteTopRepuestos(); break;
+            case 3: menuReporteFacturacionMecanicos(); break;
+            case 0: break;
+            default: cout << "Opcion invalida.\n";
+        }
+    } while (opc != 0);
+}
+
+void verificarIntegridad() {
+    cout << "\n--- VERIFICACION DE INTEGRIDAD DEL SISTEMA ---\n";
+    int inconsistencias = 0;
+
+    ArchivoHeader hVeh{}, hMec{}, hRep{}, hOrd{};
+    bool okVeh = leerHeaderVehiculos(RUTA_VEHICULOS, hVeh);
+    bool okMec = leerHeaderMecanicos(RUTA_MECANICOS, hMec);
+    bool okRep = leerHeaderRepuestos(RUTA_REPUESTOS, hRep);
+    bool okOrd = leerHeaderOrdenes(RUTA_ORDENES, hOrd);
+
+    if (!okVeh || !okMec || !okRep || !okOrd) {
+        cout << "[ERROR] No se pudieron leer todos los headers de los archivos binarios.\n";
+        inconsistencias++;
+    }
+
+    if (okVeh) {
+        ifstream f(RUTA_VEHICULOS, ios::binary);
+        f.seekg(sizeof(ArchivoHeader), ios::beg);
+        Vehiculo v{};
+        int leidos = 0, activos = 0;
+        while (f.read(reinterpret_cast<char*>(&v), sizeof(Vehiculo))) {
+            if (f.gcount() != static_cast<streamsize>(sizeof(Vehiculo))) break;
+            leidos++;
+            if (!v.eliminado) activos++;
+        }
+        f.close();
+        if (leidos != hVeh.cantidadRegistros || activos != hVeh.registrosActivos) {
+            cout << "[INCONSISTENCIA] vehiculos.bin header (" << hVeh.cantidadRegistros << " tot / "
+                 << hVeh.registrosActivos << " act) no coincide con disco (" << leidos << " tot / " << activos << " act).\n";
+            inconsistencias++;
+        }
+    }
+
+    if (okMec) {
+        ifstream f(RUTA_MECANICOS, ios::binary);
+        f.seekg(sizeof(ArchivoHeader), ios::beg);
+        Mecanico m{};
+        int leidos = 0, activos = 0;
+        while (f.read(reinterpret_cast<char*>(&m), sizeof(Mecanico))) {
+            if (f.gcount() != static_cast<streamsize>(sizeof(Mecanico))) break;
+            leidos++;
+            if (!m.eliminado) activos++;
+        }
+        f.close();
+        if (leidos != hMec.cantidadRegistros || activos != hMec.registrosActivos) {
+            cout << "[INCONSISTENCIA] mecanicos.bin header (" << hMec.cantidadRegistros << " tot / "
+                 << hMec.registrosActivos << " act) no coincide con disco (" << leidos << " tot / " << activos << " act).\n";
+            inconsistencias++;
+        }
+    }
+
+    if (okRep) {
+        ifstream f(RUTA_REPUESTOS, ios::binary);
+        f.seekg(sizeof(ArchivoHeader), ios::beg);
+        Repuesto r{};
+        int leidos = 0, activos = 0;
+        while (f.read(reinterpret_cast<char*>(&r), sizeof(Repuesto))) {
+            if (f.gcount() != static_cast<streamsize>(sizeof(Repuesto))) break;
+            leidos++;
+            if (!r.eliminado) activos++;
+            if (r.stock < 0) {
+                cout << "[INCONSISTENCIA] Repuesto #" << r.id << " (" << r.codigo << ") tiene stock negativo (" << r.stock << ").\n";
+                inconsistencias++;
+            }
+        }
+        f.close();
+        if (leidos != hRep.cantidadRegistros || activos != hRep.registrosActivos) {
+            cout << "[INCONSISTENCIA] repuestos.bin header (" << hRep.cantidadRegistros << " tot / "
+                 << hRep.registrosActivos << " act) no coincide con disco (" << leidos << " tot / " << activos << " act).\n";
+            inconsistencias++;
+        }
+    }
+
+    if (okOrd) {
+        ifstream f(RUTA_ORDENES, ios::binary);
+        f.seekg(sizeof(ArchivoHeader), ios::beg);
+        OrdenServicio o{};
+        int leidos = 0, activos = 0;
+        while (f.read(reinterpret_cast<char*>(&o), sizeof(OrdenServicio))) {
+            if (f.gcount() != static_cast<streamsize>(sizeof(OrdenServicio))) break;
+            leidos++;
+            if (!o.eliminado) activos++;
+
+            Vehiculo v{};
+            EstadoBusquedaVehiculo estV = leerVehiculoPorIDBin(RUTA_VEHICULOS, o.idVehiculo, v);
+            if (estV == VEHICULO_NO_EXISTE || estV == VEHICULO_ERROR_ARCHIVO) {
+                cout << "[INCONSISTENCIA] Orden #" << o.id << " referencia vehiculo inexistente #" << o.idVehiculo << ".\n";
+                inconsistencias++;
+            } else if (strcmp(o.estado, "ABIERTA") == 0 && estV != VEHICULO_ENCONTRADO) {
+                cout << "[INCONSISTENCIA] Orden ABIERTA #" << o.id << " apunta a vehiculo no activo #" << o.idVehiculo << ".\n";
+                inconsistencias++;
+            }
+
+            Mecanico m{};
+            EstadoBusquedaMecanico estM = leerMecanicoPorIDBin(RUTA_MECANICOS, o.idMecanico, m);
+            if (estM == MECANICO_NO_EXISTE || estM == MECANICO_ERROR_ARCHIVO) {
+                cout << "[INCONSISTENCIA] Orden #" << o.id << " referencia mecanico inexistente #" << o.idMecanico << ".\n";
+                inconsistencias++;
+            } else if (strcmp(o.estado, "ABIERTA") == 0 && estM != MECANICO_ENCONTRADO) {
+                cout << "[INCONSISTENCIA] Orden ABIERTA #" << o.id << " apunta a mecanico no activo #" << o.idMecanico << ".\n";
+                inconsistencias++;
+            }
+
+            int lim = o.numDetalles;
+            if (lim < 0) lim = 0;
+            if (lim > MAX_DETALLES_ORDEN) lim = MAX_DETALLES_ORDEN;
+            for (int j = 0; j < lim; j++) {
+                Repuesto r{};
+                EstadoBusquedaRepuesto estR = leerRepuestoPorIDBin(RUTA_REPUESTOS, o.detalles[j].idRepuesto, r);
+                if (estR == REPUESTO_NO_EXISTE || estR == REPUESTO_ERROR_ARCHIVO) {
+                    cout << "[INCONSISTENCIA] Orden #" << o.id << " tiene detalle con repuesto inexistente #" << o.detalles[j].idRepuesto << ".\n";
+                    inconsistencias++;
+                }
+            }
+        }
+        f.close();
+        if (leidos != hOrd.cantidadRegistros || activos != hOrd.registrosActivos) {
+            cout << "[INCONSISTENCIA] ordenes.bin header (" << hOrd.cantidadRegistros << " tot / "
+                 << hOrd.registrosActivos << " act) no coincide con disco (" << leidos << " tot / " << activos << " act).\n";
+            inconsistencias++;
+        }
+    }
+
+    cout << "Resumen de verificacion: " << inconsistencias << " inconsistencia(s) encontrada(s).\n";
+}
+
+void crearBackup() {
+    char carpetaBackup[64];
+    if (crearBackupLogica(CARPETA_DATOS, carpetaBackup, sizeof(carpetaBackup))) {
+        cout << "EXITO: Backup creado en la carpeta '" << carpetaBackup << "'.\n";
+    } else {
+        cout << "ERROR: No se pudo crear el backup.\n";
+    }
+}
+
+void menuMantenimiento() {
+    int opc = 0;
+    do {
+        cout << "\n--- MANTENIMIENTO ---\n";
+        cout << "1. Verificar Integridad\n";
+        cout << "2. Crear Backup\n";
+        cout << "0. Volver al menu principal\n";
+        cout << "Seleccione una opcion: ";
+        if (!(cin >> opc)) {
+            cin.clear();
+            cin.ignore(10000, '\n');
+            continue;
+        }
+
+        switch (opc) {
+            case 1: verificarIntegridad(); break;
+            case 2: crearBackup(); break;
             case 0: break;
             default: cout << "Opcion invalida.\n";
         }
