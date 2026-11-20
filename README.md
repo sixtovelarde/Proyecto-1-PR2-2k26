@@ -1,7 +1,7 @@
 # Proyecto 1 PR2 2k26
 Sistema de Gestión de Taller Mecánico
 
-Autores: Francisco López. C.I: 30567703 
+Autores: Vicente Cardozo. C.I: 32025338
          Sixto Velarde. C.I: 30901575
 Lenguaje: C++
 Propósito académico: Proyecto de Programación II enfocado en el uso de punteros y memoria dinámica.
