@@ -229,12 +229,6 @@ const int MAX_RESULTADOS_BUSQUEDA = 20;
 
 
 bool asegurarCarpetaDatos(const char* carpeta) {
-    ifstream prueba(carpeta);
-    if (prueba.good()) {
-        prueba.close();
-        return true;
-    }
-    prueba.close();
     CREAR_CARPETA(carpeta);
     return true;
 }
@@ -853,6 +847,12 @@ static string aMinusculas(const char* texto) {
     return res;
 }
 
+static void aMayusculasInPlace(char* texto) {
+    for (size_t i = 0; texto[i] != '\0'; i++) {
+        texto[i] = static_cast<char>(toupper(static_cast<unsigned char>(texto[i])));
+    }
+}
+
 bool existePlacaActiva(const char* ruta, const char* placa) {
     ArchivoHeader header;
     if (!leerHeaderVehiculos(ruta, header)) return false;
@@ -875,6 +875,7 @@ bool existePlacaActiva(const char* ruta, const char* placa) {
 }
 
 ResultadoRegistroVehiculo registrarVehiculoLogica(const char* ruta, Vehiculo datos, int& idGenerado) {
+    aMayusculasInPlace(datos.placa);
     if (datos.anio < 1950 || datos.anio > 2027 || datos.kilometraje < 0 || strlen(datos.placa) == 0) {
         return REGISTRO_DATOS_INVALIDOS;
     }
@@ -892,6 +893,10 @@ EstadoBusquedaVehiculo obtenerVehiculoPorIDLogica(const char* ruta, int id, Vehi
 }
 
 EstadoBusquedaVehiculo obtenerVehiculoPorPlacaLogica(const char* ruta, const char* placa, Vehiculo& salida) {
+    char placaNorm[10]{};
+    strncpy(placaNorm, placa, sizeof(placaNorm) - 1);
+    aMayusculasInPlace(placaNorm);
+
     ArchivoHeader header;
     if (!leerHeaderVehiculos(ruta, header)) return VEHICULO_ERROR_ARCHIVO;
 
@@ -906,7 +911,7 @@ EstadoBusquedaVehiculo obtenerVehiculoPorPlacaLogica(const char* ruta, const cha
     for (int i = 0; i < header.cantidadRegistros; i++) {
         archivo.read(reinterpret_cast<char*>(&actual), sizeof(Vehiculo));
         if (archivo.gcount() != static_cast<streamsize>(sizeof(Vehiculo))) break;
-        if (strcmp(actual.placa, placa) == 0) {
+        if (strcmp(actual.placa, placaNorm) == 0) {
             if (!actual.eliminado) {
                 salida = actual;
                 archivo.close();
@@ -1134,6 +1139,7 @@ int contarOrdenesAbiertasMecanicoLogica(const char* rutaOrdenes, int idMecanico,
 }
 
 ResultadoRegistroMecanico registrarMecanicoLogica(const char* ruta, Mecanico datos, int& idGenerado) {
+    aMayusculasInPlace(datos.especialidad);
     if (strlen(datos.nombre) == 0 || strlen(datos.cedula) == 0 || !especialidadMecanicoValida(datos.especialidad)) {
         return MEC_REG_DATOS_INVALIDOS;
     }
@@ -1257,6 +1263,7 @@ bool repuestoEstaEnAlgunaOrden(const char* rutaOrdenes, int idRepuesto, bool& er
 }
 
 ResultadoRegistroRepuesto registrarRepuestoLogica(const char* ruta, Repuesto datos, int& idGenerado) {
+    aMayusculasInPlace(datos.codigo);
     if (strlen(datos.codigo) == 0 || strlen(datos.nombre) == 0 ||
         datos.precio <= 0.0f || datos.stock < 0 || datos.stockMinimo < 0) {
         return REP_REG_DATOS_INVALIDOS;
@@ -1275,6 +1282,10 @@ EstadoBusquedaRepuesto obtenerRepuestoPorIDLogica(const char* ruta, int id, Repu
 }
 
 EstadoBusquedaRepuesto obtenerRepuestoPorCodigoLogica(const char* ruta, const char* codigo, Repuesto& salida) {
+    char codigoNorm[20]{};
+    strncpy(codigoNorm, codigo, sizeof(codigoNorm) - 1);
+    aMayusculasInPlace(codigoNorm);
+
     ArchivoHeader header;
     if (!leerHeaderRepuestos(ruta, header)) return REPUESTO_ERROR_ARCHIVO;
 
@@ -1289,7 +1300,7 @@ EstadoBusquedaRepuesto obtenerRepuestoPorCodigoLogica(const char* ruta, const ch
     for (int i = 0; i < header.cantidadRegistros; i++) {
         archivo.read(reinterpret_cast<char*>(&actual), sizeof(Repuesto));
         if (archivo.gcount() != static_cast<streamsize>(sizeof(Repuesto))) break;
-        if (strcmp(actual.codigo, codigo) == 0) {
+        if (strcmp(actual.codigo, codigoNorm) == 0) {
             if (!actual.eliminado) {
                 salida = actual;
                 archivo.close();
@@ -1631,6 +1642,7 @@ ResultadoOperacionOrden cerrarOrdenLogica(
     if (estOrd == ORDEN_ERROR_ARCHIVO) return ORD_OP_ERROR_ARCHIVO;
     if (estOrd != ORDEN_ENCONTRADA) return ORD_OP_NO_EXISTE;
     if (strcmp(orden.estado, "ABIERTA") != 0) return ORD_OP_ESTADO_INVALIDO;
+    if (strcmp(fechaCierre, orden.fechaApertura) < 0) return ORD_OP_DATOS_INVALIDOS;
 
     if (orden.numDetalles == 0 && manoObra <= 0.0f) {
         return ORD_OP_DATOS_INVALIDOS;
@@ -1689,6 +1701,10 @@ int listarOrdenesPorEstadoLogica(
     int maxResultados,
     bool& hayMas
 ) {
+    char estadoNorm[12]{};
+    strncpy(estadoNorm, estadoFiltro, sizeof(estadoNorm) - 1);
+    aMayusculasInPlace(estadoNorm);
+
     hayMas = false;
     ArchivoHeader header{};
     if (!leerHeaderOrdenes(rutaOrdenes, header)) return -1;
@@ -1703,7 +1719,7 @@ int listarOrdenesPorEstadoLogica(
     for (int i = 0; i < header.cantidadRegistros; i++) {
         archivo.read(reinterpret_cast<char*>(&orden), sizeof(OrdenServicio));
         if (archivo.gcount() != static_cast<streamsize>(sizeof(OrdenServicio))) break;
-        if (!orden.eliminado && strcmp(orden.estado, estadoFiltro) == 0) {
+        if (!orden.eliminado && strcmp(orden.estado, estadoNorm) == 0) {
             if (encontrados < maxResultados) {
                 resultados[encontrados++] = orden;
             } else {
@@ -1839,7 +1855,10 @@ int calcularTopRepuestosConsumidosLogica(
         return -1;
     }
 
-    int countTop = 0;
+    int capacidad = headerRep.proximoID > 1 ? headerRep.proximoID : 1;
+    ConsumoRepuestoReporte* acumulado = new ConsumoRepuestoReporte[capacidad]{};
+    int totalDistintos = 0;
+
     for (int i = 0; i < maxTop; i++) {
         topSalida[i].idRepuesto = 0;
         topSalida[i].codigo[0] = '\0';
@@ -1860,53 +1879,60 @@ int calcularTopRepuestosConsumidosLogica(
         for (int j = 0; j < limite; j++) {
             int idRep = orden.detalles[j].idRepuesto;
             int cant = orden.detalles[j].cantidad;
-            if (idRep <= 0 || cant <= 0) continue;
+            if (idRep <= 0 || idRep >= capacidad || cant <= 0) continue;
 
-            int idx = -1;
-            for (int k = 0; k < countTop; k++) {
-                if (topSalida[k].idRepuesto == idRep) {
-                    idx = k;
-                    break;
-                }
-            }
-
-            if (idx != -1) {
-                topSalida[idx].unidadesConsumidas += cant;
-            } else if (countTop < maxTop) {
+            if (acumulado[idRep].idRepuesto == 0) {
                 Repuesto rep{};
                 ifstream archRep(rutaRepuestos, ios::binary);
-                if (archRep.is_open() && idRep < headerRep.proximoID) {
+                if (archRep.is_open()) {
                     archRep.seekg(calcularOffsetRepuesto(idRep), ios::beg);
                     archRep.read(reinterpret_cast<char*>(&rep), sizeof(Repuesto));
                     if (archRep.gcount() == static_cast<streamsize>(sizeof(Repuesto)) && rep.id == idRep) {
-                        topSalida[countTop].idRepuesto = rep.id;
-                        strncpy(topSalida[countTop].codigo, rep.codigo, sizeof(topSalida[countTop].codigo) - 1);
-                        topSalida[countTop].codigo[sizeof(topSalida[countTop].codigo) - 1] = '\0';
-                        strncpy(topSalida[countTop].nombre, rep.nombre, sizeof(topSalida[countTop].nombre) - 1);
-                        topSalida[countTop].nombre[sizeof(topSalida[countTop].nombre) - 1] = '\0';
-                        topSalida[countTop].unidadesConsumidas = cant;
-                        countTop++;
+                        acumulado[idRep].idRepuesto = rep.id;
+                        strncpy(acumulado[idRep].codigo, rep.codigo, sizeof(acumulado[idRep].codigo) - 1);
+                        acumulado[idRep].codigo[sizeof(acumulado[idRep].codigo) - 1] = '\0';
+                        strncpy(acumulado[idRep].nombre, rep.nombre, sizeof(acumulado[idRep].nombre) - 1);
+                        acumulado[idRep].nombre[sizeof(acumulado[idRep].nombre) - 1] = '\0';
+                        acumulado[idRep].unidadesConsumidas = cant;
+                        totalDistintos++;
                     }
                     archRep.close();
                 }
+            } else {
+                acumulado[idRep].unidadesConsumidas += cant;
             }
         }
     }
     archOrd.close();
 
-    for (int i = 0; i < countTop; i++) {
+    ConsumoRepuestoReporte* listaCompacta = new ConsumoRepuestoReporte[totalDistintos > 0 ? totalDistintos : 1]{};
+    int idxCompacto = 0;
+    for (int id = 1; id < capacidad; id++) {
+        if (acumulado[id].idRepuesto > 0) {
+            listaCompacta[idxCompacto++] = acumulado[id];
+        }
+    }
+    delete[] acumulado;
+
+    for (int i = 0; i < idxCompacto; i++) {
         int mayor = i;
-        for (int j = i + 1; j < countTop; j++) {
-            if (topSalida[j].unidadesConsumidas > topSalida[mayor].unidadesConsumidas) {
+        for (int j = i + 1; j < idxCompacto; j++) {
+            if (listaCompacta[j].unidadesConsumidas > listaCompacta[mayor].unidadesConsumidas) {
                 mayor = j;
             }
         }
         if (mayor != i) {
-            ConsumoRepuestoReporte aux = topSalida[i];
-            topSalida[i] = topSalida[mayor];
-            topSalida[mayor] = aux;
+            ConsumoRepuestoReporte aux = listaCompacta[i];
+            listaCompacta[i] = listaCompacta[mayor];
+            listaCompacta[mayor] = aux;
         }
     }
+
+    int countTop = (idxCompacto < maxTop) ? idxCompacto : maxTop;
+    for (int i = 0; i < countTop; i++) {
+        topSalida[i] = listaCompacta[i];
+    }
+    delete[] listaCompacta;
 
     return countTop;
 }
@@ -2005,10 +2031,20 @@ void menuRegistrarVehiculo() {
     cout << "Modelo: ";
     cin >> temp.modelo;
     cout << "Anio: ";
-    cin >> temp.anio;
+    if (!(cin >> temp.anio)) {
+        cin.clear();
+        cin.ignore(10000, '\n');
+        cout << "\nERROR: Anio invalido.\n";
+        return;
+    }
     cout << "Kilometraje: ";
-    cin >> temp.kilometraje;
-    cin.ignore();
+    if (!(cin >> temp.kilometraje)) {
+        cin.clear();
+        cin.ignore(10000, '\n');
+        cout << "\nERROR: Kilometraje invalido.\n";
+        return;
+    }
+    cin.ignore(10000, '\n');
     cout << "Nombre del propietario: ";
     cin.getline(temp.nombrePropietario, sizeof(temp.nombrePropietario));
     cout << "Cedula del propietario: ";
@@ -2072,7 +2108,7 @@ void menuBuscarVehiculoPorPlaca() {
 void menuBuscarVehiculoPorPropietario() {
     char sub[100];
     cout << "Ingrese subcadena del nombre del propietario: ";
-    cin.ignore();
+    cin.ignore(10000, '\n');
     cin.getline(sub, sizeof(sub));
 
     Vehiculo resultados[MAX_RESULTADOS_BUSQUEDA];
@@ -2096,14 +2132,58 @@ void menuBuscarVehiculoPorPropietario() {
     }
 }
 
-void menuPrincipal() {
-    int opcion;
+void menuActualizarVehiculo();
+void menuEliminarVehiculo();
+void menuListarVehiculos();
+void menuGestionMecanicos();
+void menuGestionRepuestos();
+void menuGestionOrdenes();
+void menuReportes();
+void menuMantenimiento();
+
+void menuGestionVehiculos() {
+    int opc = 0;
     do {
-        cout << "\nSISTEMA DE GESTION DE TALLER\n";
+        cout << "\n--- GESTION DE VEHICULOS ---\n";
         cout << "1. Registrar Vehiculo\n";
         cout << "2. Buscar Vehiculo por ID\n";
         cout << "3. Buscar Vehiculo por Placa\n";
         cout << "4. Buscar Vehiculo por Propietario\n";
+        cout << "5. Listar Vehiculos Activos\n";
+        cout << "6. Actualizar Vehiculo\n";
+        cout << "7. Eliminar Vehiculo\n";
+        cout << "0. Volver al menu principal\n";
+        cout << "Seleccione una opcion: ";
+        if (!(cin >> opc)) {
+            cin.clear();
+            cin.ignore(10000, '\n');
+            continue;
+        }
+
+        switch (opc) {
+            case 1: menuRegistrarVehiculo(); break;
+            case 2: menuBuscarVehiculoPorID(); break;
+            case 3: menuBuscarVehiculoPorPlaca(); break;
+            case 4: menuBuscarVehiculoPorPropietario(); break;
+            case 5: menuListarVehiculos(); break;
+            case 6: menuActualizarVehiculo(); break;
+            case 7: menuEliminarVehiculo(); break;
+            case 0: break;
+            default: cout << "Opcion invalida.\n";
+        }
+    } while (opc != 0);
+}
+
+void menuPrincipal() {
+    int opcion;
+    do {
+        cout << "\n=== SISTEMA DE GESTION DE TALLER ===\n";
+        cout << "1. Gestion de Vehiculos\n";
+        cout << "2. Gestion de Mecanicos\n";
+        cout << "3. Inventario de Repuestos\n";
+        cout << "4. Ordenes de Servicio\n";
+        cout << "5. Reportes\n";
+        cout << "6. Mantenimiento y Respaldo\n";
         cout << "0. Salir\n";
         cout << "Seleccione una opcion: ";
         if (!(cin >> opcion)) {
@@ -2113,23 +2193,14 @@ void menuPrincipal() {
         }
 
         switch (opcion) {
-            case 1:
-                menuRegistrarVehiculo();
-                break;
-            case 2:
-                menuBuscarVehiculoPorID();
-                break;
-            case 3:
-                menuBuscarVehiculoPorPlaca();
-                break;
-            case 4:
-                menuBuscarVehiculoPorPropietario();
-                break;
-            case 0:
-                cout << "Saliendo del sistema...\n";
-                break;
-            default:
-                cout << "Opcion invalida. Intente de nuevo.\n";
+            case 1: menuGestionVehiculos(); break;
+            case 2: menuGestionMecanicos(); break;
+            case 3: menuGestionRepuestos(); break;
+            case 4: menuGestionOrdenes(); break;
+            case 5: menuReportes(); break;
+            case 6: menuMantenimiento(); break;
+            case 0: cout << "Saliendo del sistema...\n"; break;
+            default: cout << "Opcion invalida. Intente de nuevo.\n";
         }
     } while (opcion != 0);
 }
@@ -2138,7 +2209,6 @@ void configurarTallerInicial() {
     Taller t{};
     cout << "\n--- CONFIGURACION INICIAL DEL TALLER ---\n";
     cout << "Nombre del taller: ";
-    cin.ignore(10000, '\n');
     cin.getline(t.nombre, sizeof(t.nombre));
     if (strlen(t.nombre) == 0) {
         strcpy(t.nombre, "Autoservicio El Lago");
@@ -2925,13 +2995,23 @@ void menuMantenimiento() {
 
 
 int main() {
-    bool creadoNuevo = false;
-    if (!inicializarArchivoVehiculos(RUTA_VEHICULOS, creadoNuevo)) {
-        cerr << "ERROR: No se pudo inicializar " << RUTA_VEHICULOS << ".\n";
+    bool creadoVeh = false, creadoMec = false, creadoRep = false, creadoOrd = false;
+
+    if (!inicializarArchivoVehiculos(RUTA_VEHICULOS, creadoVeh) ||
+        !inicializarArchivoMecanicos(RUTA_MECANICOS, creadoMec) ||
+        !inicializarArchivoRepuestos(RUTA_REPUESTOS, creadoRep) ||
+        !inicializarArchivoOrdenes(RUTA_ORDENES, creadoOrd)) {
+        cerr << "ERROR: No se pudieron inicializar los archivos binarios en " << CARPETA_DATOS << ".\n";
         return 1;
     }
-    if (creadoNuevo) {
-        cout << "Archivo " << RUTA_VEHICULOS << " inicializado con header por defecto.\n";
+
+    if (!existeTallerBin(RUTA_TALLER)) {
+        configurarTallerInicial();
+    } else {
+        Taller t{};
+        if (leerTallerBin(RUTA_TALLER, t)) {
+            cout << "Taller cargado: " << t.nombre << " (RIF: " << t.rif << ")\n";
+        }
     }
 
     menuPrincipal();
