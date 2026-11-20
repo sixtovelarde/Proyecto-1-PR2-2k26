@@ -118,6 +118,30 @@ enum ResultadoEliminarVehiculo {
     ELIMINAR_ERROR_ARCHIVO = 4
 };
 
+enum EstadoBusquedaMecanico {
+    MECANICO_ENCONTRADO = 0,
+    MECANICO_NO_EXISTE = 1,
+    MECANICO_ELIMINADO = 2,
+    MECANICO_ERROR_ARCHIVO = 3
+};
+
+enum ResultadoRegistroMecanico {
+    MEC_REG_OK = 0,
+    MEC_REG_DATOS_INVALIDOS = 1,
+    MEC_REG_CEDULA_DUPLICADA = 2,
+    MEC_REG_ERROR_ARCHIVO = 3
+};
+
+enum ResultadoBajaMecanico {
+    MEC_BAJA_OK = 0,
+    MEC_BAJA_NO_EXISTE = 1,
+    MEC_BAJA_YA_ELIMINADO = 2,
+    MEC_BAJA_TIENE_ORDENES_ABIERTAS = 3,
+    MEC_BAJA_ERROR_ARCHIVO = 4
+};
+
+const char* RUTA_MECANICOS = "datos/mecanicos.bin";
+
 const char* RUTA_TALLER = "datos/taller.bin";
 const char* RUTA_ORDENES = "datos/ordenes.bin";
 
@@ -177,6 +201,159 @@ long long calcularOffsetVehiculo(int id) {
     long long indiceFisico = static_cast<long long>(id) - 1;
     return static_cast<long long>(sizeof(ArchivoHeader)) +
            indiceFisico * static_cast<long long>(sizeof(Vehiculo));
+}
+
+long long calcularOffsetMecanico(int id) {
+    long long indiceFisico = static_cast<long long>(id) - 1;
+    return static_cast<long long>(sizeof(ArchivoHeader)) +
+           indiceFisico * static_cast<long long>(sizeof(Mecanico));
+}
+
+bool inicializarArchivoMecanicos(const char* ruta, bool& creadoNuevo) {
+    creadoNuevo = false;
+    asegurarCarpetaDatos(CARPETA_DATOS);
+
+    ifstream entrada(ruta, ios::binary);
+    if (entrada.good()) {
+        entrada.close();
+        return true;
+    }
+    entrada.close();
+
+    ofstream salida(ruta, ios::binary | ios::trunc);
+    if (!salida.is_open()) return false;
+
+    ArchivoHeader header{0, 1, 0, 1};
+    salida.write(reinterpret_cast<const char*>(&header), sizeof(ArchivoHeader));
+    bool ok = salida.good();
+    salida.close();
+    if (ok) creadoNuevo = true;
+    return ok;
+}
+
+bool leerHeaderMecanicos(const char* ruta, ArchivoHeader& header) {
+    ifstream archivo(ruta, ios::binary);
+    if (!archivo.is_open()) return false;
+    archivo.read(reinterpret_cast<char*>(&header), sizeof(ArchivoHeader));
+    bool ok = archivo.gcount() == static_cast<streamsize>(sizeof(ArchivoHeader));
+    archivo.close();
+    return ok;
+}
+
+bool actualizarHeaderMecanicos(const char* ruta, const ArchivoHeader& header) {
+    fstream archivo(ruta, ios::in | ios::out | ios::binary);
+    if (!archivo.is_open()) return false;
+    archivo.seekp(0, ios::beg);
+    archivo.write(reinterpret_cast<const char*>(&header), sizeof(ArchivoHeader));
+    bool ok = archivo.good();
+    archivo.close();
+    return ok;
+}
+
+bool guardarMecanicoNuevoBin(const char* ruta, Mecanico& registro, int& idAsignado) {
+    ArchivoHeader header;
+    if (!leerHeaderMecanicos(ruta, header)) return false;
+
+    fstream archivo(ruta, ios::in | ios::out | ios::binary);
+    if (!archivo.is_open()) return false;
+
+    time_t ahora = time(nullptr);
+    registro.id = header.proximoID;
+    registro.eliminado = false;
+    registro.fechaCreacion = ahora;
+    registro.fechaUltimaModificacion = ahora;
+
+    long long offset = calcularOffsetMecanico(registro.id);
+    archivo.seekp(offset, ios::beg);
+    archivo.write(reinterpret_cast<const char*>(&registro), sizeof(Mecanico));
+    if (!archivo.good()) {
+        archivo.close();
+        return false;
+    }
+    archivo.close();
+
+    header.cantidadRegistros++;
+    header.registrosActivos++;
+    header.proximoID++;
+    if (!actualizarHeaderMecanicos(ruta, header)) return false;
+
+    idAsignado = registro.id;
+    return true;
+}
+
+EstadoBusquedaMecanico leerMecanicoPorIDBin(const char* ruta, int id, Mecanico& salida, long long* offsetUsado = nullptr) {
+    if (id <= 0) return MECANICO_NO_EXISTE;
+
+    ArchivoHeader header;
+    if (!leerHeaderMecanicos(ruta, header)) return MECANICO_ERROR_ARCHIVO;
+    if (id >= header.proximoID) return MECANICO_NO_EXISTE;
+
+    ifstream archivo(ruta, ios::binary);
+    if (!archivo.is_open()) return MECANICO_ERROR_ARCHIVO;
+
+    long long offset = calcularOffsetMecanico(id);
+    if (offsetUsado != nullptr) *offsetUsado = offset;
+
+    archivo.seekg(offset, ios::beg);
+    archivo.read(reinterpret_cast<char*>(&salida), sizeof(Mecanico));
+    bool ok = archivo.gcount() == static_cast<streamsize>(sizeof(Mecanico));
+    archivo.close();
+
+    if (!ok) return MECANICO_ERROR_ARCHIVO;
+    if (salida.eliminado) return MECANICO_ELIMINADO;
+    return MECANICO_ENCONTRADO;
+}
+
+bool sobrescribirMecanicoBin(const char* ruta, Mecanico& registro) {
+    if (registro.id <= 0) return false;
+
+    fstream archivo(ruta, ios::in | ios::out | ios::binary);
+    if (!archivo.is_open()) return false;
+
+    registro.fechaUltimaModificacion = time(nullptr);
+    long long offset = calcularOffsetMecanico(registro.id);
+    archivo.seekp(offset, ios::beg);
+    archivo.write(reinterpret_cast<const char*>(&registro), sizeof(Mecanico));
+    bool ok = archivo.good();
+    archivo.close();
+    return ok;
+}
+
+bool marcarMecanicoEliminadoBin(const char* ruta, int id) {
+    ArchivoHeader header;
+    if (!leerHeaderMecanicos(ruta, header)) return false;
+    if (id <= 0 || id >= header.proximoID) return false;
+
+    fstream archivo(ruta, ios::in | ios::out | ios::binary);
+    if (!archivo.is_open()) return false;
+
+    long long offset = calcularOffsetMecanico(id);
+    Mecanico actual;
+    archivo.seekg(offset, ios::beg);
+    archivo.read(reinterpret_cast<char*>(&actual), sizeof(Mecanico));
+    if (archivo.gcount() != static_cast<streamsize>(sizeof(Mecanico)) || actual.eliminado) {
+        archivo.close();
+        return false;
+    }
+
+    actual.eliminado = true;
+    actual.fechaUltimaModificacion = time(nullptr);
+    archivo.seekp(offset, ios::beg);
+    archivo.write(reinterpret_cast<const char*>(&actual), sizeof(Mecanico));
+    bool ok = archivo.good();
+    archivo.close();
+
+    if (!ok) return false;
+
+    header.registrosActivos--;
+    return actualizarHeaderMecanicos(ruta, header);
+}
+
+bool contarMecanicosActivosBin(const char* ruta, int& activos) {
+    ArchivoHeader header;
+    if (!leerHeaderMecanicos(ruta, header)) return false;
+    activos = header.registrosActivos;
+    return true;
 }
 
 bool inicializarArchivoVehiculos(const char* ruta, bool& creadoNuevo) {
@@ -554,6 +731,130 @@ bool actualizarVehiculoLogica(const char* ruta, int id, const Vehiculo& nuevosDa
     return sobrescribirVehiculoBin(ruta, actual);
 }
 
+bool especialidadMecanicoValida(const char* esp) {
+    return strcmp(esp, "MOTOR") == 0 ||
+           strcmp(esp, "FRENOS") == 0 ||
+           strcmp(esp, "ELECTRICIDAD") == 0 ||
+           strcmp(esp, "SUSPENSION") == 0 ||
+           strcmp(esp, "GENERAL") == 0;
+}
+
+bool existeCedulaMecanico(const char* ruta, const char* cedula) {
+    ArchivoHeader header;
+    if (!leerHeaderMecanicos(ruta, header)) return false;
+
+    ifstream archivo(ruta, ios::binary);
+    if (!archivo.is_open()) return false;
+
+    archivo.seekg(sizeof(ArchivoHeader), ios::beg);
+    Mecanico actual;
+    for (int i = 0; i < header.cantidadRegistros; i++) {
+        archivo.read(reinterpret_cast<char*>(&actual), sizeof(Mecanico));
+        if (archivo.gcount() != static_cast<streamsize>(sizeof(Mecanico))) break;
+        if (strcmp(actual.cedula, cedula) == 0) {
+            archivo.close();
+            return true;
+        }
+    }
+    archivo.close();
+    return false;
+}
+
+int contarOrdenesAbiertasMecanicoLogica(const char* rutaOrdenes, int idMecanico, bool& errorArchivo) {
+    errorArchivo = false;
+    ifstream prueba(rutaOrdenes, ios::binary);
+    if (!prueba.good()) {
+        prueba.close();
+        return 0;
+    }
+    prueba.close();
+
+    ifstream archivo(rutaOrdenes, ios::binary);
+    if (!archivo.is_open()) {
+        errorArchivo = true;
+        return 0;
+    }
+
+    ArchivoHeader headerOrdenes{};
+    archivo.read(reinterpret_cast<char*>(&headerOrdenes), sizeof(ArchivoHeader));
+    if (archivo.gcount() != static_cast<streamsize>(sizeof(ArchivoHeader))) {
+        errorArchivo = true;
+        archivo.close();
+        return 0;
+    }
+
+    int abiertas = 0;
+    OrdenServicio orden{};
+    for (int i = 0; i < headerOrdenes.cantidadRegistros; i++) {
+        archivo.read(reinterpret_cast<char*>(&orden), sizeof(OrdenServicio));
+        if (archivo.gcount() != static_cast<streamsize>(sizeof(OrdenServicio))) break;
+        if (orden.idMecanico == idMecanico && strcmp(orden.estado, "ABIERTA") == 0) {
+            abiertas++;
+        }
+    }
+    archivo.close();
+    return abiertas;
+}
+
+ResultadoRegistroMecanico registrarMecanicoLogica(const char* ruta, Mecanico datos, int& idGenerado) {
+    if (strlen(datos.nombre) == 0 || strlen(datos.cedula) == 0 || !especialidadMecanicoValida(datos.especialidad)) {
+        return MEC_REG_DATOS_INVALIDOS;
+    }
+    if (existeCedulaMecanico(ruta, datos.cedula)) {
+        return MEC_REG_CEDULA_DUPLICADA;
+    }
+    if (!guardarMecanicoNuevoBin(ruta, datos, idGenerado)) {
+        return MEC_REG_ERROR_ARCHIVO;
+    }
+    return MEC_REG_OK;
+}
+
+EstadoBusquedaMecanico obtenerMecanicoPorIDLogica(const char* ruta, int id, Mecanico& salida, long long* offsetUsado = nullptr) {
+    return leerMecanicoPorIDBin(ruta, id, salida, offsetUsado);
+}
+
+int listarTodosMecanicosLogica(const char* ruta, Mecanico resultados[], int maxResultados, bool& hayMas) {
+    hayMas = false;
+    ArchivoHeader header;
+    if (!leerHeaderMecanicos(ruta, header)) return -1;
+
+    ifstream archivo(ruta, ios::binary);
+    if (!archivo.is_open()) return -1;
+
+    archivo.seekg(sizeof(ArchivoHeader), ios::beg);
+    Mecanico actual;
+    int encontrados = 0;
+
+    for (int i = 0; i < header.cantidadRegistros; i++) {
+        archivo.read(reinterpret_cast<char*>(&actual), sizeof(Mecanico));
+        if (archivo.gcount() != static_cast<streamsize>(sizeof(Mecanico))) break;
+        if (encontrados < maxResultados) {
+            resultados[encontrados++] = actual;
+        } else {
+            hayMas = true;
+        }
+    }
+    archivo.close();
+    return encontrados;
+}
+
+ResultadoBajaMecanico darDeBajaMecanicoLogica(const char* rutaMecanicos, const char* rutaOrdenes, int id) {
+    Mecanico actual{};
+    EstadoBusquedaMecanico estado = leerMecanicoPorIDBin(rutaMecanicos, id, actual);
+    if (estado == MECANICO_ERROR_ARCHIVO) return MEC_BAJA_ERROR_ARCHIVO;
+    if (estado == MECANICO_NO_EXISTE) return MEC_BAJA_NO_EXISTE;
+    if (estado == MECANICO_ELIMINADO) return MEC_BAJA_YA_ELIMINADO;
+
+    bool errorOrdenes = false;
+    int abiertas = contarOrdenesAbiertasMecanicoLogica(rutaOrdenes, id, errorOrdenes);
+    if (errorOrdenes) return MEC_BAJA_ERROR_ARCHIVO;
+    if (abiertas > 0) return MEC_BAJA_TIENE_ORDENES_ABIERTAS;
+
+    if (!marcarMecanicoEliminadoBin(rutaMecanicos, id)) {
+        return MEC_BAJA_ERROR_ARCHIVO;
+    }
+    return MEC_BAJA_OK;
+}
 
 // 4. Capa de presentacion unica con cin / cout
 
@@ -811,6 +1112,134 @@ void menuListarVehiculos() {
     if (hayMas) {
         cout << "AVISO: Existen mas vehiculos activos que el limite de " << MAX_RESULTADOS_BUSQUEDA << ".\n";
     }
+}
+
+void mostrarMecanico(const Mecanico& m) {
+    cout << "\n--- Datos del Mecanico ---\n";
+    cout << "ID: " << m.id << " | Nombre: " << m.nombre;
+    if (m.eliminado) cout << " [BAJA]";
+    cout << "\nCedula: " << m.cedula << " | Especialidad: " << m.especialidad << " | Ingreso: " << m.fechaIngreso << "\n";
+    cout << "--------------------------\n";
+}
+
+void menuRegistrarMecanico() {
+    Mecanico m{};
+    cout << "\n--- REGISTRAR MECANICO ---\n";
+    cin.ignore(10000, '\n');
+    cout << "Nombre: ";
+    cin.getline(m.nombre, sizeof(m.nombre));
+    cout << "Cedula: ";
+    cin >> m.cedula;
+    cout << "Especialidad (MOTOR / FRENOS / ELECTRICIDAD / SUSPENSION / GENERAL): ";
+    cin >> m.especialidad;
+    cout << "Fecha de ingreso (YYYY-MM-DD): ";
+    cin >> m.fechaIngreso;
+
+    int idGenerado = 0;
+    ResultadoRegistroMecanico res = registrarMecanicoLogica(RUTA_MECANICOS, m, idGenerado);
+    if (res == MEC_REG_OK) {
+        cout << "EXITO: Mecanico registrado con ID " << idGenerado << ".\n";
+    } else if (res == MEC_REG_CEDULA_DUPLICADA) {
+        cout << "ERROR: Ya existe un mecanico con esa cedula.\n";
+    } else if (res == MEC_REG_DATOS_INVALIDOS) {
+        cout << "ERROR: Datos invalidos o especialidad no permitida.\n";
+    } else {
+        cout << "ERROR: Fallo al acceder a " << RUTA_MECANICOS << ".\n";
+    }
+}
+
+void menuBuscarMecanicoPorID() {
+    int id;
+    cout << "Ingrese el ID del mecanico: ";
+    cin >> id;
+
+    Mecanico m{};
+    long long offset = 0;
+    EstadoBusquedaMecanico estado = obtenerMecanicoPorIDLogica(RUTA_MECANICOS, id, m, &offset);
+    if (estado == MECANICO_ENCONTRADO) {
+        cout << "[DEBUG] Leido en byte offset: " << offset << "\n";
+        mostrarMecanico(m);
+    } else if (estado == MECANICO_ELIMINADO) {
+        cout << "AVISO: El mecanico #" << id << " esta dado de baja.\n";
+    } else if (estado == MECANICO_NO_EXISTE) {
+        cout << "Mecanico #" << id << " no existe.\n";
+    } else {
+        cout << "ERROR: Fallo al leer " << RUTA_MECANICOS << ".\n";
+    }
+}
+
+void menuListarMecanicos() {
+    Mecanico lista[MAX_RESULTADOS_BUSQUEDA];
+    bool hayMas = false;
+    int cant = listarTodosMecanicosLogica(RUTA_MECANICOS, lista, MAX_RESULTADOS_BUSQUEDA, hayMas);
+
+    if (cant < 0) {
+        cout << "ERROR: Fallo al leer " << RUTA_MECANICOS << ".\n";
+        return;
+    }
+    if (cant == 0) {
+        cout << "No hay mecanicos registrados.\n";
+        return;
+    }
+
+    cout << "\nID\tNombre\t\t\tCedula\t\tEspecialidad\tOrd. Abiertas\tEstado\n";
+    cout << "---------------------------------------------------------------------------------------\n";
+    for (int i = 0; i < cant; i++) {
+        bool errOrd = false;
+        int abiertas = contarOrdenesAbiertasMecanicoLogica(RUTA_ORDENES, lista[i].id, errOrd);
+        cout << lista[i].id << "\t" << lista[i].nombre << "\t\t"
+             << lista[i].cedula << "\t\t" << lista[i].especialidad << "\t"
+             << abiertas << "\t\t" << (lista[i].eliminado ? "BAJA" : "ACTIVO") << "\n";
+    }
+    if (hayMas) {
+        cout << "AVISO: Existen mas mecanicos que el limite de " << MAX_RESULTADOS_BUSQUEDA << ".\n";
+    }
+}
+
+void menuDarDeBajaMecanico() {
+    int id;
+    cout << "ID del Mecanico a dar de baja: ";
+    cin >> id;
+
+    ResultadoBajaMecanico res = darDeBajaMecanicoLogica(RUTA_MECANICOS, RUTA_ORDENES, id);
+    if (res == MEC_BAJA_OK) {
+        cout << "EXITO: Mecanico #" << id << " dado de baja logicamente.\n";
+    } else if (res == MEC_BAJA_TIENE_ORDENES_ABIERTAS) {
+        cout << "ERROR: No se puede dar de baja al mecanico #" << id << " porque tiene ordenes ABIERTAS.\n";
+    } else if (res == MEC_BAJA_YA_ELIMINADO) {
+        cout << "AVISO: El mecanico #" << id << " ya estaba dado de baja.\n";
+    } else if (res == MEC_BAJA_NO_EXISTE) {
+        cout << "ERROR: Mecanico #" << id << " no existe.\n";
+    } else {
+        cout << "ERROR: Fallo al acceder a los archivos.\n";
+    }
+}
+
+void menuGestionMecanicos() {
+    int opc = 0;
+    do {
+        cout << "\n--- GESTION DE MECANICOS ---\n";
+        cout << "1. Registrar Mecanico\n";
+        cout << "2. Buscar Mecanico por ID\n";
+        cout << "3. Listar Todos los Mecanicos\n";
+        cout << "4. Dar de Baja Mecanico\n";
+        cout << "0. Volver al menu principal\n";
+        cout << "Seleccione una opcion: ";
+        if (!(cin >> opc)) {
+            cin.clear();
+            cin.ignore(10000, '\n');
+            continue;
+        }
+
+        switch (opc) {
+            case 1: menuRegistrarMecanico(); break;
+            case 2: menuBuscarMecanicoPorID(); break;
+            case 3: menuListarMecanicos(); break;
+            case 4: menuDarDeBajaMecanico(); break;
+            case 0: break;
+            default: cout << "Opcion invalida.\n";
+        }
+    } while (opc != 0);
 }
 
 // 5. Funcion principal
