@@ -140,6 +140,30 @@ enum ResultadoBajaMecanico {
     MEC_BAJA_ERROR_ARCHIVO = 4
 };
 
+enum EstadoBusquedaRepuesto {
+    REPUESTO_ENCONTRADO = 0,
+    REPUESTO_NO_EXISTE = 1,
+    REPUESTO_ELIMINADO = 2,
+    REPUESTO_ERROR_ARCHIVO = 3
+};
+
+enum ResultadoRegistroRepuesto {
+    REP_REG_OK = 0,
+    REP_REG_DATOS_INVALIDOS = 1,
+    REP_REG_CODIGO_DUPLICADO = 2,
+    REP_REG_ERROR_ARCHIVO = 3
+};
+
+enum ResultadoEliminarRepuesto {
+    REP_ELIM_OK = 0,
+    REP_ELIM_NO_EXISTE = 1,
+    REP_ELIM_YA_ELIMINADO = 2,
+    REP_ELIM_EN_USO_EN_ORDEN = 3,
+    REP_ELIM_ERROR_ARCHIVO = 4
+};
+
+const char* RUTA_REPUESTOS = "datos/repuestos.bin";
+
 const char* RUTA_MECANICOS = "datos/mecanicos.bin";
 
 const char* RUTA_TALLER = "datos/taller.bin";
@@ -505,6 +529,152 @@ bool contarVehiculosActivosBin(const char* ruta, int& activos) {
     return true;
 }
 
+long long calcularOffsetRepuesto(int id) {
+    long long indiceFisico = static_cast<long long>(id) - 1;
+    return static_cast<long long>(sizeof(ArchivoHeader)) +
+           indiceFisico * static_cast<long long>(sizeof(Repuesto));
+}
+
+bool inicializarArchivoRepuestos(const char* ruta, bool& creadoNuevo) {
+    creadoNuevo = false;
+    asegurarCarpetaDatos(CARPETA_DATOS);
+
+    ifstream entrada(ruta, ios::binary);
+    if (entrada.good()) {
+        entrada.close();
+        return true;
+    }
+    entrada.close();
+
+    ofstream salida(ruta, ios::binary | ios::trunc);
+    if (!salida.is_open()) return false;
+
+    ArchivoHeader header{0, 1, 0, 1};
+    salida.write(reinterpret_cast<const char*>(&header), sizeof(ArchivoHeader));
+    bool ok = salida.good();
+    salida.close();
+    if (ok) creadoNuevo = true;
+    return ok;
+}
+
+bool leerHeaderRepuestos(const char* ruta, ArchivoHeader& header) {
+    ifstream archivo(ruta, ios::binary);
+    if (!archivo.is_open()) return false;
+    archivo.read(reinterpret_cast<char*>(&header), sizeof(ArchivoHeader));
+    bool ok = archivo.gcount() == static_cast<streamsize>(sizeof(ArchivoHeader));
+    archivo.close();
+    return ok;
+}
+
+bool actualizarHeaderRepuestos(const char* ruta, const ArchivoHeader& header) {
+    fstream archivo(ruta, ios::in | ios::out | ios::binary);
+    if (!archivo.is_open()) return false;
+    archivo.seekp(0, ios::beg);
+    archivo.write(reinterpret_cast<const char*>(&header), sizeof(ArchivoHeader));
+    bool ok = archivo.good();
+    archivo.close();
+    return ok;
+}
+
+bool guardarRepuestoNuevoBin(const char* ruta, Repuesto& registro, int& idAsignado) {
+    ArchivoHeader header;
+    if (!leerHeaderRepuestos(ruta, header)) return false;
+
+    fstream archivo(ruta, ios::in | ios::out | ios::binary);
+    if (!archivo.is_open()) return false;
+
+    time_t ahora = time(nullptr);
+    registro.id = header.proximoID;
+    registro.eliminado = false;
+    registro.fechaCreacion = ahora;
+    registro.fechaUltimaModificacion = ahora;
+
+    long long offset = calcularOffsetRepuesto(registro.id);
+    archivo.seekp(offset, ios::beg);
+    archivo.write(reinterpret_cast<const char*>(&registro), sizeof(Repuesto));
+    if (!archivo.good()) {
+        archivo.close();
+        return false;
+    }
+    archivo.close();
+
+    header.cantidadRegistros++;
+    header.registrosActivos++;
+    header.proximoID++;
+    if (!actualizarHeaderRepuestos(ruta, header)) return false;
+
+    idAsignado = registro.id;
+    return true;
+}
+
+EstadoBusquedaRepuesto leerRepuestoPorIDBin(const char* ruta, int id, Repuesto& salida, long long* offsetUsado = nullptr) {
+    if (id <= 0) return REPUESTO_NO_EXISTE;
+
+    ArchivoHeader header;
+    if (!leerHeaderRepuestos(ruta, header)) return REPUESTO_ERROR_ARCHIVO;
+    if (id >= header.proximoID) return REPUESTO_NO_EXISTE;
+
+    ifstream archivo(ruta, ios::binary);
+    if (!archivo.is_open()) return REPUESTO_ERROR_ARCHIVO;
+
+    long long offset = calcularOffsetRepuesto(id);
+    if (offsetUsado != nullptr) *offsetUsado = offset;
+
+    archivo.seekg(offset, ios::beg);
+    archivo.read(reinterpret_cast<char*>(&salida), sizeof(Repuesto));
+    bool ok = archivo.gcount() == static_cast<streamsize>(sizeof(Repuesto));
+    archivo.close();
+
+    if (!ok) return REPUESTO_ERROR_ARCHIVO;
+    if (salida.eliminado) return REPUESTO_ELIMINADO;
+    return REPUESTO_ENCONTRADO;
+}
+
+bool sobrescribirRepuestoBin(const char* ruta, Repuesto& registro) {
+    if (registro.id <= 0) return false;
+
+    fstream archivo(ruta, ios::in | ios::out | ios::binary);
+    if (!archivo.is_open()) return false;
+
+    registro.fechaUltimaModificacion = time(nullptr);
+    long long offset = calcularOffsetRepuesto(registro.id);
+    archivo.seekp(offset, ios::beg);
+    archivo.write(reinterpret_cast<const char*>(&registro), sizeof(Repuesto));
+    bool ok = archivo.good();
+    archivo.close();
+    return ok;
+}
+
+bool marcarRepuestoEliminadoBin(const char* ruta, int id) {
+    ArchivoHeader header;
+    if (!leerHeaderRepuestos(ruta, header)) return false;
+    if (id <= 0 || id >= header.proximoID) return false;
+
+    fstream archivo(ruta, ios::in | ios::out | ios::binary);
+    if (!archivo.is_open()) return false;
+
+    long long offset = calcularOffsetRepuesto(id);
+    Repuesto actual;
+    archivo.seekg(offset, ios::beg);
+    archivo.read(reinterpret_cast<char*>(&actual), sizeof(Repuesto));
+    if (archivo.gcount() != static_cast<streamsize>(sizeof(Repuesto)) || actual.eliminado) {
+        archivo.close();
+        return false;
+    }
+
+    actual.eliminado = true;
+    actual.fechaUltimaModificacion = time(nullptr);
+    archivo.seekp(offset, ios::beg);
+    archivo.write(reinterpret_cast<const char*>(&actual), sizeof(Repuesto));
+    bool ok = archivo.good();
+    archivo.close();
+
+    if (!ok) return false;
+
+    header.registrosActivos--;
+    return actualizarHeaderRepuestos(ruta, header);
+}
+
 // 3. CAPA DE LÓGICA (SIN CIN / COUT)
 
 
@@ -854,6 +1024,218 @@ ResultadoBajaMecanico darDeBajaMecanicoLogica(const char* rutaMecanicos, const c
         return MEC_BAJA_ERROR_ARCHIVO;
     }
     return MEC_BAJA_OK;
+}
+
+bool existeCodigoRepuestoActivo(const char* ruta, const char* codigo) {
+    ArchivoHeader header;
+    if (!leerHeaderRepuestos(ruta, header)) return false;
+
+    ifstream archivo(ruta, ios::binary);
+    if (!archivo.is_open()) return false;
+
+    archivo.seekg(sizeof(ArchivoHeader), ios::beg);
+    Repuesto actual;
+    for (int i = 0; i < header.cantidadRegistros; i++) {
+        archivo.read(reinterpret_cast<char*>(&actual), sizeof(Repuesto));
+        if (archivo.gcount() != static_cast<streamsize>(sizeof(Repuesto))) break;
+        if (!actual.eliminado && strcmp(actual.codigo, codigo) == 0) {
+            archivo.close();
+            return true;
+        }
+    }
+    archivo.close();
+    return false;
+}
+
+bool repuestoEstaEnAlgunaOrden(const char* rutaOrdenes, int idRepuesto, bool& errorArchivo) {
+    errorArchivo = false;
+    ifstream prueba(rutaOrdenes, ios::binary);
+    if (!prueba.good()) {
+        prueba.close();
+        return false;
+    }
+    prueba.close();
+
+    ifstream archivo(rutaOrdenes, ios::binary);
+    if (!archivo.is_open()) {
+        errorArchivo = true;
+        return false;
+    }
+
+    ArchivoHeader headerOrdenes{};
+    archivo.read(reinterpret_cast<char*>(&headerOrdenes), sizeof(ArchivoHeader));
+    if (archivo.gcount() != static_cast<streamsize>(sizeof(ArchivoHeader))) {
+        errorArchivo = true;
+        archivo.close();
+        return false;
+    }
+
+    OrdenServicio orden{};
+    for (int i = 0; i < headerOrdenes.cantidadRegistros; i++) {
+        archivo.read(reinterpret_cast<char*>(&orden), sizeof(OrdenServicio));
+        if (archivo.gcount() != static_cast<streamsize>(sizeof(OrdenServicio))) break;
+        int limite = orden.numDetalles;
+        if (limite < 0) limite = 0;
+        if (limite > 15) limite = 15;
+        for (int j = 0; j < limite; j++) {
+            if (orden.detalles[j].idRepuesto == idRepuesto) {
+                archivo.close();
+                return true;
+            }
+        }
+    }
+
+    archivo.close();
+    return false;
+}
+
+ResultadoRegistroRepuesto registrarRepuestoLogica(const char* ruta, Repuesto datos, int& idGenerado) {
+    if (strlen(datos.codigo) == 0 || strlen(datos.nombre) == 0 ||
+        datos.precio <= 0.0f || datos.stock < 0 || datos.stockMinimo < 0) {
+        return REP_REG_DATOS_INVALIDOS;
+    }
+    if (existeCodigoRepuestoActivo(ruta, datos.codigo)) {
+        return REP_REG_CODIGO_DUPLICADO;
+    }
+    if (!guardarRepuestoNuevoBin(ruta, datos, idGenerado)) {
+        return REP_REG_ERROR_ARCHIVO;
+    }
+    return REP_REG_OK;
+}
+
+EstadoBusquedaRepuesto obtenerRepuestoPorIDLogica(const char* ruta, int id, Repuesto& salida, long long* offsetUsado = nullptr) {
+    return leerRepuestoPorIDBin(ruta, id, salida, offsetUsado);
+}
+
+EstadoBusquedaRepuesto obtenerRepuestoPorCodigoLogica(const char* ruta, const char* codigo, Repuesto& salida) {
+    ArchivoHeader header;
+    if (!leerHeaderRepuestos(ruta, header)) return REPUESTO_ERROR_ARCHIVO;
+
+    ifstream archivo(ruta, ios::binary);
+    if (!archivo.is_open()) return REPUESTO_ERROR_ARCHIVO;
+
+    archivo.seekg(sizeof(ArchivoHeader), ios::beg);
+    Repuesto actual;
+    bool encontroEliminado = false;
+    Repuesto ultimoEliminado{};
+
+    for (int i = 0; i < header.cantidadRegistros; i++) {
+        archivo.read(reinterpret_cast<char*>(&actual), sizeof(Repuesto));
+        if (archivo.gcount() != static_cast<streamsize>(sizeof(Repuesto))) break;
+        if (strcmp(actual.codigo, codigo) == 0) {
+            if (!actual.eliminado) {
+                salida = actual;
+                archivo.close();
+                return REPUESTO_ENCONTRADO;
+            }
+            encontroEliminado = true;
+            ultimoEliminado = actual;
+        }
+    }
+    archivo.close();
+
+    if (encontroEliminado) {
+        salida = ultimoEliminado;
+        return REPUESTO_ELIMINADO;
+    }
+    return REPUESTO_NO_EXISTE;
+}
+
+int buscarRepuestosPorNombreLogica(const char* ruta, const char* subcadena, Repuesto resultados[], int maxResultados, bool& hayMas) {
+    hayMas = false;
+    ArchivoHeader header;
+    if (!leerHeaderRepuestos(ruta, header)) return -1;
+
+    ifstream archivo(ruta, ios::binary);
+    if (!archivo.is_open()) return -1;
+
+    archivo.seekg(sizeof(ArchivoHeader), ios::beg);
+    Repuesto actual;
+    string sub = aMinusculas(subcadena);
+    int encontrados = 0;
+
+    for (int i = 0; i < header.cantidadRegistros; i++) {
+        archivo.read(reinterpret_cast<char*>(&actual), sizeof(Repuesto));
+        if (archivo.gcount() != static_cast<streamsize>(sizeof(Repuesto))) break;
+        if (!actual.eliminado) {
+            string nom = aMinusculas(actual.nombre);
+            if (nom.find(sub) != string::npos) {
+                if (encontrados < maxResultados) {
+                    resultados[encontrados++] = actual;
+                } else {
+                    hayMas = true;
+                }
+            }
+        }
+    }
+    archivo.close();
+    return encontrados;
+}
+
+int listarRepuestosActivosLogica(const char* ruta, Repuesto resultados[], int maxResultados, bool& hayMas) {
+    hayMas = false;
+    ArchivoHeader header;
+    if (!leerHeaderRepuestos(ruta, header)) return -1;
+
+    ifstream archivo(ruta, ios::binary);
+    if (!archivo.is_open()) return -1;
+
+    archivo.seekg(sizeof(ArchivoHeader), ios::beg);
+    Repuesto actual;
+    int encontrados = 0;
+
+    for (int i = 0; i < header.cantidadRegistros; i++) {
+        archivo.read(reinterpret_cast<char*>(&actual), sizeof(Repuesto));
+        if (archivo.gcount() != static_cast<streamsize>(sizeof(Repuesto))) break;
+        if (!actual.eliminado) {
+            if (encontrados < maxResultados) {
+                resultados[encontrados++] = actual;
+            } else {
+                hayMas = true;
+            }
+        }
+    }
+    archivo.close();
+    return encontrados;
+}
+
+bool registrarEntradaMercanciaLogica(const char* ruta, int idRepuesto, int cantidad) {
+    if (cantidad <= 0) return false;
+    Repuesto actual{};
+    if (leerRepuestoPorIDBin(ruta, idRepuesto, actual) != REPUESTO_ENCONTRADO) {
+        return false;
+    }
+    actual.stock += cantidad;
+    return sobrescribirRepuestoBin(ruta, actual);
+}
+
+bool cambiarPrecioRepuestoLogica(const char* ruta, int idRepuesto, float nuevoPrecio) {
+    if (nuevoPrecio <= 0.0f) return false;
+    Repuesto actual{};
+    if (leerRepuestoPorIDBin(ruta, idRepuesto, actual) != REPUESTO_ENCONTRADO) {
+        return false;
+    }
+    actual.precio = nuevoPrecio;
+    return sobrescribirRepuestoBin(ruta, actual);
+}
+
+ResultadoEliminarRepuesto eliminarRepuestoLogica(const char* rutaRepuestos, const char* rutaOrdenes, int id) {
+    Repuesto actual{};
+    EstadoBusquedaRepuesto estado = leerRepuestoPorIDBin(rutaRepuestos, id, actual);
+    if (estado == REPUESTO_ERROR_ARCHIVO) return REP_ELIM_ERROR_ARCHIVO;
+    if (estado == REPUESTO_NO_EXISTE) return REP_ELIM_NO_EXISTE;
+    if (estado == REPUESTO_ELIMINADO) return REP_ELIM_YA_ELIMINADO;
+
+    bool errorOrdenes = false;
+    if (repuestoEstaEnAlgunaOrden(rutaOrdenes, id, errorOrdenes)) {
+        return REP_ELIM_EN_USO_EN_ORDEN;
+    }
+    if (errorOrdenes) return REP_ELIM_ERROR_ARCHIVO;
+
+    if (!marcarRepuestoEliminadoBin(rutaRepuestos, id)) {
+        return REP_ELIM_ERROR_ARCHIVO;
+    }
+    return REP_ELIM_OK;
 }
 
 // 4. Capa de presentacion unica con cin / cout
@@ -1257,4 +1639,217 @@ int main() {
 
     menuPrincipal();
     return 0;
+}
+
+void mostrarRepuesto(const Repuesto& r) {
+    cout << "\n--- Datos del Repuesto ---\n";
+    cout << "ID: " << r.id << " | Codigo: " << r.codigo << "\n";
+    cout << "Nombre: " << r.nombre << " | Marca: " << r.marca << "\n";
+    cout << "Precio: " << r.precio << " | Stock: " << r.stock << " (Minimo: " << r.stockMinimo << ")";
+    if (r.stock <= r.stockMinimo) {
+        cout << " [BAJO STOCK]";
+    }
+    cout << "\n--------------------------\n";
+}
+
+void menuRegistrarRepuesto() {
+    Repuesto r{};
+    cout << "\n--- REGISTRAR REPUESTO ---\n";
+    cout << "Codigo: ";
+    cin >> r.codigo;
+    cin.ignore(10000, '\n');
+    cout << "Nombre: ";
+    cin.getline(r.nombre, sizeof(r.nombre));
+    cout << "Marca: ";
+    cin.getline(r.marca, sizeof(r.marca));
+    cout << "Precio: ";
+    cin >> r.precio;
+    cout << "Stock inicial: ";
+    cin >> r.stock;
+    cout << "Stock minimo: ";
+    cin >> r.stockMinimo;
+
+    int idGenerado = 0;
+    ResultadoRegistroRepuesto res = registrarRepuestoLogica(RUTA_REPUESTOS, r, idGenerado);
+    if (res == REP_REG_OK) {
+        cout << "EXITO: Repuesto registrado con ID " << idGenerado << ".\n";
+    } else if (res == REP_REG_CODIGO_DUPLICADO) {
+        cout << "ERROR: Ya existe un repuesto activo con ese codigo.\n";
+    } else if (res == REP_REG_DATOS_INVALIDOS) {
+        cout << "ERROR: Datos invalidos (codigo/nombre no vacios, precio > 0, stock y minimo >= 0).\n";
+    } else {
+        cout << "ERROR: Fallo al acceder a " << RUTA_REPUESTOS << ".\n";
+    }
+}
+
+void menuBuscarRepuestoPorID() {
+    int id;
+    cout << "Ingrese el ID del repuesto: ";
+    cin >> id;
+
+    Repuesto r{};
+    long long offset = 0;
+    EstadoBusquedaRepuesto estado = obtenerRepuestoPorIDLogica(RUTA_REPUESTOS, id, r, &offset);
+    if (estado == REPUESTO_ENCONTRADO) {
+        cout << "[DEBUG] Leido en byte offset: " << offset << "\n";
+        mostrarRepuesto(r);
+    } else if (estado == REPUESTO_ELIMINADO) {
+        cout << "AVISO: El repuesto #" << id << " fue eliminado logicamente.\n";
+    } else if (estado == REPUESTO_NO_EXISTE) {
+        cout << "Repuesto #" << id << " no existe.\n";
+    } else {
+        cout << "ERROR: Fallo al leer " << RUTA_REPUESTOS << ".\n";
+    }
+}
+
+void menuBuscarRepuestoPorCodigo() {
+    char codigo[20];
+    cout << "Ingrese el codigo del repuesto: ";
+    cin >> codigo;
+
+    Repuesto r{};
+    EstadoBusquedaRepuesto estado = obtenerRepuestoPorCodigoLogica(RUTA_REPUESTOS, codigo, r);
+    if (estado == REPUESTO_ENCONTRADO) {
+        mostrarRepuesto(r);
+    } else if (estado == REPUESTO_ELIMINADO) {
+        cout << "AVISO: El repuesto con codigo '" << codigo << "' esta eliminado.\n";
+    } else if (estado == REPUESTO_NO_EXISTE) {
+        cout << "Repuesto con codigo '" << codigo << "' no encontrado.\n";
+    } else {
+        cout << "ERROR: Fallo al leer " << RUTA_REPUESTOS << ".\n";
+    }
+}
+
+void menuBuscarRepuestoPorNombre() {
+    char sub[100];
+    cout << "Ingrese subcadena del nombre del repuesto: ";
+    cin.ignore(10000, '\n');
+    cin.getline(sub, sizeof(sub));
+
+    Repuesto resultados[MAX_RESULTADOS_BUSQUEDA];
+    bool hayMas = false;
+    int cant = buscarRepuestosPorNombreLogica(RUTA_REPUESTOS, sub, resultados, MAX_RESULTADOS_BUSQUEDA, hayMas);
+    if (cant < 0) {
+        cout << "ERROR: Fallo al leer " << RUTA_REPUESTOS << ".\n";
+        return;
+    }
+    if (cant == 0) {
+        cout << "No se encontraron repuestos activos con ese nombre.\n";
+        return;
+    }
+    for (int i = 0; i < cant; i++) {
+        mostrarRepuesto(resultados[i]);
+    }
+    if (hayMas) {
+        cout << "AVISO: Hay mas resultados que el limite de " << MAX_RESULTADOS_BUSQUEDA << ".\n";
+    }
+}
+
+void menuListarRepuestosActivos() {
+    Repuesto lista[MAX_RESULTADOS_BUSQUEDA];
+    bool hayMas = false;
+    int cant = listarRepuestosActivosLogica(RUTA_REPUESTOS, lista, MAX_RESULTADOS_BUSQUEDA, hayMas);
+    if (cant < 0) {
+        cout << "ERROR: Fallo al leer " << RUTA_REPUESTOS << ".\n";
+        return;
+    }
+    if (cant == 0) {
+        cout << "No hay repuestos activos registrados.\n";
+        return;
+    }
+
+    cout << "\nID\tCodigo\t\tNombre\t\t\tPrecio\tStock\tMin\tEstado Stock\n";
+    cout << "--------------------------------------------------------------------------------------------\n";
+    for (int i = 0; i < cant; i++) {
+        cout << lista[i].id << "\t" << lista[i].codigo << "\t\t"
+             << lista[i].nombre << "\t\t" << lista[i].precio << "\t"
+             << lista[i].stock << "\t" << lista[i].stockMinimo << "\t"
+             << (lista[i].stock <= lista[i].stockMinimo ? "[BAJO STOCK]" : "OK") << "\n";
+    }
+    if (hayMas) {
+        cout << "AVISO: Existen mas repuestos activos que el limite de " << MAX_RESULTADOS_BUSQUEDA << ".\n";
+    }
+}
+
+void menuEntradaMercancia() {
+    int id, cantidad;
+    cout << "ID del Repuesto: ";
+    cin >> id;
+    cout << "Cantidad a ingresar (> 0): ";
+    cin >> cantidad;
+
+    if (registrarEntradaMercanciaLogica(RUTA_REPUESTOS, id, cantidad)) {
+        cout << "EXITO: Entrada de mercancia registrada.\n";
+    } else {
+        cout << "ERROR: Verifique el ID del repuesto (activo) y que la cantidad sea mayor a 0.\n";
+    }
+}
+
+void menuCambiarPrecioRepuesto() {
+    int id;
+    float nuevoPrecio;
+    cout << "ID del Repuesto: ";
+    cin >> id;
+    cout << "Nuevo precio (> 0): ";
+    cin >> nuevoPrecio;
+
+    if (cambiarPrecioRepuestoLogica(RUTA_REPUESTOS, id, nuevoPrecio)) {
+        cout << "EXITO: Precio actualizado (las ordenes anteriores conservan su precio historico).\n";
+    } else {
+        cout << "ERROR: Verifique el ID del repuesto (activo) y que el precio sea mayor a 0.\n";
+    }
+}
+
+void menuEliminarRepuesto() {
+    int id;
+    cout << "ID del Repuesto a eliminar: ";
+    cin >> id;
+
+    ResultadoEliminarRepuesto res = eliminarRepuestoLogica(RUTA_REPUESTOS, RUTA_ORDENES, id);
+    if (res == REP_ELIM_OK) {
+        cout << "EXITO: Repuesto #" << id << " eliminado logicamente.\n";
+    } else if (res == REP_ELIM_EN_USO_EN_ORDEN) {
+        cout << "ERROR: No se puede eliminar el repuesto #" << id << " porque figura en alguna orden.\n";
+    } else if (res == REP_ELIM_YA_ELIMINADO) {
+        cout << "AVISO: El repuesto #" << id << " ya estaba eliminado logicamente.\n";
+    } else if (res == REP_ELIM_NO_EXISTE) {
+        cout << "ERROR: Repuesto #" << id << " no existe.\n";
+    } else {
+        cout << "ERROR: Fallo al acceder a los archivos.\n";
+    }
+}
+
+void menuGestionRepuestos() {
+    int opc = 0;
+    do {
+        cout << "\n--- INVENTARIO DE REPUESTOS ---\n";
+        cout << "1. Registrar Repuesto\n";
+        cout << "2. Buscar Repuesto por ID\n";
+        cout << "3. Buscar Repuesto por Codigo\n";
+        cout << "4. Buscar Repuesto por Nombre\n";
+        cout << "5. Listar Repuestos Activos\n";
+        cout << "6. Registrar Entrada de Mercancia\n";
+        cout << "7. Cambiar Precio\n";
+        cout << "8. Eliminar Repuesto\n";
+        cout << "0. Volver al menu principal\n";
+        cout << "Seleccione una opcion: ";
+        if (!(cin >> opc)) {
+            cin.clear();
+            cin.ignore(10000, '\n');
+            continue;
+        }
+
+        switch (opc) {
+            case 1: menuRegistrarRepuesto(); break;
+            case 2: menuBuscarRepuestoPorID(); break;
+            case 3: menuBuscarRepuestoPorCodigo(); break;
+            case 4: menuBuscarRepuestoPorNombre(); break;
+            case 5: menuListarRepuestosActivos(); break;
+            case 6: menuEntradaMercancia(); break;
+            case 7: menuCambiarPrecioRepuesto(); break;
+            case 8: menuEliminarRepuesto(); break;
+            case 0: break;
+            default: cout << "Opcion invalida.\n";
+        }
+    } while (opc != 0);
 }
