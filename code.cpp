@@ -1,4 +1,4 @@
- #include <iostream>
+#include <iostream>
 #include <fstream>
 #include <cstring>
 #include <cctype>
@@ -110,6 +110,17 @@ enum ResultadoRegistroVehiculo {
     REGISTRO_ERROR_ARCHIVO = 3
 };
 
+enum ResultadoEliminarVehiculo {
+    ELIMINAR_OK = 0,
+    ELIMINAR_NO_EXISTE = 1,
+    ELIMINAR_YA_ELIMINADO = 2,
+    ELIMINAR_TIENE_ORDENES = 3,
+    ELIMINAR_ERROR_ARCHIVO = 4
+};
+
+const char* RUTA_TALLER = "datos/taller.bin";
+const char* RUTA_ORDENES = "datos/ordenes.bin";
+
 const char* CARPETA_DATOS = "datos";
 const char* RUTA_VEHICULOS = "datos/vehiculos.bin";
 const int MAX_RESULTADOS_BUSQUEDA = 20;
@@ -127,6 +138,39 @@ bool asegurarCarpetaDatos(const char* carpeta) {
     prueba.close();
     CREAR_CARPETA(carpeta);
     return true;
+}
+
+bool existeTallerBin(const char* ruta) {
+    ifstream archivo(ruta, ios::binary);
+    if (!archivo.is_open()) return false;
+    archivo.seekg(0, ios::end);
+    long long tam = archivo.tellg();
+    archivo.close();
+    return tam == static_cast<long long>(sizeof(Taller));
+}
+
+bool guardarTallerBin(const char* ruta, Taller& datos) {
+    asegurarCarpetaDatos(CARPETA_DATOS);
+    ofstream archivo(ruta, ios::binary | ios::trunc);
+    if (!archivo.is_open()) return false;
+
+    time_t ahora = time(nullptr);
+    datos.fechaCreacion = ahora;
+    datos.fechaUltimaModificacion = ahora;
+
+    archivo.write(reinterpret_cast<const char*>(&datos), sizeof(Taller));
+    bool ok = archivo.good();
+    archivo.close();
+    return ok;
+}
+
+bool leerTallerBin(const char* ruta, Taller& salida) {
+    ifstream archivo(ruta, ios::binary);
+    if (!archivo.is_open()) return false;
+    archivo.read(reinterpret_cast<char*>(&salida), sizeof(Taller));
+    bool ok = archivo.gcount() == static_cast<streamsize>(sizeof(Taller));
+    archivo.close();
+    return ok;
 }
 
 long long calcularOffsetVehiculo(int id) {
@@ -367,6 +411,89 @@ EstadoBusquedaVehiculo obtenerVehiculoPorPlacaLogica(const char* ruta, const cha
     return VEHICULO_NO_EXISTE;
 }
 
+bool vehiculoTieneOrdenes(const char* rutaOrdenes, int idVehiculo, bool& errorArchivo) {
+    errorArchivo = false;
+    ifstream prueba(rutaOrdenes, ios::binary);
+    if (!prueba.good()) {
+        prueba.close();
+        return false;
+    }
+    prueba.close();
+
+    ifstream archivo(rutaOrdenes, ios::binary);
+    if (!archivo.is_open()) {
+        errorArchivo = true;
+        return false;
+    }
+
+    ArchivoHeader headerOrdenes{};
+    archivo.read(reinterpret_cast<char*>(&headerOrdenes), sizeof(ArchivoHeader));
+    if (archivo.gcount() != static_cast<streamsize>(sizeof(ArchivoHeader))) {
+        errorArchivo = true;
+        archivo.close();
+        return false;
+    }
+
+    OrdenServicio orden{};
+    for (int i = 0; i < headerOrdenes.cantidadRegistros; i++) {
+        archivo.read(reinterpret_cast<char*>(&orden), sizeof(OrdenServicio));
+        if (archivo.gcount() != static_cast<streamsize>(sizeof(OrdenServicio))) break;
+        if (orden.idVehiculo == idVehiculo) {
+            archivo.close();
+            return true;
+        }
+    }
+
+    archivo.close();
+    return false;
+}
+
+int listarVehiculosActivosLogica(const char* ruta, Vehiculo resultados[], int maxResultados, bool& hayMas) {
+    hayMas = false;
+    ArchivoHeader header;
+    if (!leerHeaderVehiculos(ruta, header)) return -1;
+
+    ifstream archivo(ruta, ios::binary);
+    if (!archivo.is_open()) return -1;
+
+    archivo.seekg(sizeof(ArchivoHeader), ios::beg);
+    Vehiculo actual;
+    int encontrados = 0;
+
+    for (int i = 0; i < header.cantidadRegistros; i++) {
+        archivo.read(reinterpret_cast<char*>(&actual), sizeof(Vehiculo));
+        if (archivo.gcount() != static_cast<streamsize>(sizeof(Vehiculo))) break;
+        if (!actual.eliminado) {
+            if (encontrados < maxResultados) {
+                resultados[encontrados++] = actual;
+            } else {
+                hayMas = true;
+            }
+        }
+    }
+    archivo.close();
+    return encontrados;
+}
+
+ResultadoEliminarVehiculo eliminarVehiculoLogica(const char* rutaVehiculos, const char* rutaOrdenes, int id) {
+    Vehiculo actual{};
+    EstadoBusquedaVehiculo estado = leerVehiculoPorIDBin(rutaVehiculos, id, actual);
+    if (estado == VEHICULO_ERROR_ARCHIVO) return ELIMINAR_ERROR_ARCHIVO;
+    if (estado == VEHICULO_NO_EXISTE) return ELIMINAR_NO_EXISTE;
+    if (estado == VEHICULO_ELIMINADO) return ELIMINAR_YA_ELIMINADO;
+
+    bool errorOrdenes = false;
+    if (vehiculoTieneOrdenes(rutaOrdenes, id, errorOrdenes)) {
+        return ELIMINAR_TIENE_ORDENES;
+    }
+    if (errorOrdenes) return ELIMINAR_ERROR_ARCHIVO;
+
+    if (!marcarVehiculoEliminadoBin(rutaVehiculos, id)) {
+        return ELIMINAR_ERROR_ARCHIVO;
+    }
+    return ELIMINAR_OK;
+}
+
 int buscarVehiculosPorPropietarioLogica(const char* ruta, const char* subcadena, Vehiculo resultados[], int maxResultados, bool& hayMas) {
     hayMas = false;
     ArchivoHeader header;
@@ -579,6 +706,112 @@ void menuPrincipal() {
     } while (opcion != 0);
 }
 
+void configurarTallerInicial() {
+    Taller t{};
+    cout << "\n--- CONFIGURACION INICIAL DEL TALLER ---\n";
+    cout << "Nombre del taller: ";
+    cin.ignore(10000, '\n');
+    cin.getline(t.nombre, sizeof(t.nombre));
+    if (strlen(t.nombre) == 0) {
+        strcpy(t.nombre, "Autoservicio El Lago");
+    }
+    cout << "RIF: ";
+    cin >> t.rif;
+    cin.ignore(10000, '\n');
+    cout << "Direccion: ";
+    cin.getline(t.direccion, sizeof(t.direccion));
+    cout << "Telefono: ";
+    cin >> t.telefono;
+
+    if (!guardarTallerBin(RUTA_TALLER, t)) {
+        cout << "ERROR: No se pudo guardar " << RUTA_TALLER << ".\n";
+    }
+}
+
+void menuActualizarVehiculo() {
+    int id;
+    cout << "ID del Vehiculo a actualizar: ";
+    cin >> id;
+
+    Vehiculo actual{};
+    EstadoBusquedaVehiculo estado = obtenerVehiculoPorIDLogica(RUTA_VEHICULOS, id, actual);
+    if (estado == VEHICULO_ELIMINADO) {
+        cout << "ERROR: El vehiculo #" << id << " esta eliminado logicamente y no puede actualizarse.\n";
+        return;
+    }
+    if (estado != VEHICULO_ENCONTRADO) {
+        cout << "ERROR: Vehiculo #" << id << " no existe.\n";
+        return;
+    }
+
+    Vehiculo nuevos{};
+    cout << "Nueva Marca: ";
+    cin >> nuevos.marca;
+    cout << "Nuevo Modelo: ";
+    cin >> nuevos.modelo;
+    cout << "Nuevo Anio: ";
+    cin >> nuevos.anio;
+    cin.ignore(10000, '\n');
+    cout << "Nuevo Propietario: ";
+    cin.getline(nuevos.nombrePropietario, sizeof(nuevos.nombrePropietario));
+    cout << "Nueva Cedula: ";
+    cin >> nuevos.cedulaPropietario;
+    cout << "Nuevo Telefono: ";
+    cin >> nuevos.telefonoPropietario;
+
+    if (actualizarVehiculoLogica(RUTA_VEHICULOS, id, nuevos)) {
+        cout << "EXITO: Vehiculo #" << id << " actualizado.\n";
+    } else {
+        cout << "ERROR: No se pudo actualizar el vehiculo #" << id << " (verifique el anio).\n";
+    }
+}
+
+void menuEliminarVehiculo() {
+    int id;
+    cout << "ID del Vehiculo a eliminar: ";
+    cin >> id;
+
+    ResultadoEliminarVehiculo res = eliminarVehiculoLogica(RUTA_VEHICULOS, RUTA_ORDENES, id);
+    if (res == ELIMINAR_OK) {
+        cout << "EXITO: Vehiculo #" << id << " eliminado logicamente.\n";
+    } else if (res == ELIMINAR_NO_EXISTE) {
+        cout << "ERROR: Vehiculo #" << id << " no existe.\n";
+    } else if (res == ELIMINAR_YA_ELIMINADO) {
+        cout << "AVISO: Vehiculo #" << id << " ya estaba eliminado logicamente.\n";
+    } else if (res == ELIMINAR_TIENE_ORDENES) {
+        cout << "ERROR: El vehiculo #" << id << " tiene ordenes registradas y no puede eliminarse.\n";
+    } else {
+        cout << "ERROR: Fallo al acceder a los archivos del sistema.\n";
+    }
+}
+
+void menuListarVehiculos() {
+    Vehiculo lista[MAX_RESULTADOS_BUSQUEDA];
+    bool hayMas = false;
+    int cant = listarVehiculosActivosLogica(RUTA_VEHICULOS, lista, MAX_RESULTADOS_BUSQUEDA, hayMas);
+
+    if (cant < 0) {
+        cout << "ERROR: Fallo al leer " << RUTA_VEHICULOS << ".\n";
+        return;
+    }
+    if (cant == 0) {
+        cout << "No hay vehiculos activos registrados.\n";
+        return;
+    }
+
+    cout << "\nID\tPlaca\t\tVehiculo\t\tAnio\tKm\tPropietario\n";
+    cout << "---------------------------------------------------------------------------\n";
+    for (int i = 0; i < cant; i++) {
+        cout << lista[i].id << "\t" << lista[i].placa << "\t\t"
+             << lista[i].marca << " " << lista[i].modelo << "\t\t"
+             << lista[i].anio << "\t" << lista[i].kilometraje << "\t"
+             << lista[i].nombrePropietario << "\n";
+    }
+    cout << "Mostrados: " << cant << "\n";
+    if (hayMas) {
+        cout << "AVISO: Existen mas vehiculos activos que el limite de " << MAX_RESULTADOS_BUSQUEDA << ".\n";
+    }
+}
 
 // 5. Funcion principal
 
